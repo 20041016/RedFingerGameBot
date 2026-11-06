@@ -20,8 +20,9 @@ jobs:
         shell: bash
         run: |
           set -e
+
           mkdir -p extracted
-          unzip source.zip -d extracted
+          unzip -o source.zip -d extracted
 
           PROJECT_FILE=$(find extracted -type f \
             \( -name settings.gradle -o -name settings.gradle.kts \) \
@@ -60,7 +61,9 @@ jobs:
           gradle-version: '8.13'
 
       - name: Install Android SDK packages
+        shell: bash
         run: |
+          set -e
           yes | sdkmanager --licenses || true
           sdkmanager "platforms;android-35" "build-tools;35.0.0"
 
@@ -68,19 +71,38 @@ jobs:
         shell: bash
         run: |
           set -e
+
           cd "$PROJECT_DIR"
+
+          echo "=== 开始构建 Release APK ==="
           gradle --no-daemon :app:assembleRelease
 
-          APK_DIR="$PROJECT_DIR/app/build/outputs/apk/release"
+          echo "=== 搜索所有 APK 文件 ==="
 
-          UNSIGNED_APK=$(find "$APK_DIR" -maxdepth 1 \
-            -type f -name '*.apk' -print -quit)
+          find "$PROJECT_DIR" -type f -name "*.apk" -print
 
-          if [ -z "$UNSIGNED_APK" ]; then
-            echo "错误：没有找到 Release APK"
+          mapfile -t APK_FILES < <(
+            find "$PROJECT_DIR" -type f \
+              -name "*.apk" \
+              ! -iname "*debug*.apk" \
+              ! -iname "*aligned*.apk" \
+              ! -path "*/debug/*"
+          )
+
+          if [ "${#APK_FILES[@]}" -eq 0 ]; then
+            echo "错误：Gradle 构建成功，但没有找到 APK"
             exit 1
           fi
 
+          if [ "${#APK_FILES[@]}" -gt 1 ]; then
+            echo "错误：发现多个 APK，无法自动确定目标文件："
+            printf '%s\n' "${APK_FILES[@]}"
+            exit 1
+          fi
+
+          UNSIGNED_APK="${APK_FILES[0]}"
+
+          echo "找到 Release APK：$UNSIGNED_APK"
           echo "UNSIGNED_APK=$UNSIGNED_APK" >> "$GITHUB_ENV"
 
       - name: Prepare signing keystore
@@ -92,7 +114,7 @@ jobs:
           set -e
 
           if [ -z "$KEYSTORE_BASE64" ] || [ -z "$KEYSTORE_PASSWORD" ]; then
-            echo "错误：缺少签名配置"
+            echo "错误：缺少签名配置 Secrets"
             exit 1
           fi
 
@@ -127,11 +149,16 @@ jobs:
             exit 1
           fi
 
-          OUTPUT_DIR="$PROJECT_DIR/app/build/outputs/apk/release"
-          ALIGNED_APK="$OUTPUT_DIR/app-release-aligned.apk"
-          SIGNED_APK="$OUTPUT_DIR/app-release.apk"
+          ALIGNED_APK="$RUNNER_TEMP/app-release-aligned.apk"
+          SIGNED_APK="$RUNNER_TEMP/app-release.apk"
 
-          "$ZIPALIGN" -f -v 4 "$UNSIGNED_APK" "$ALIGNED_APK"
+          echo "=== APK 对齐 ==="
+
+          "$ZIPALIGN" -f -v 4 \
+            "$UNSIGNED_APK" \
+            "$ALIGNED_APK"
+
+          echo "=== APK 正式签名 ==="
 
           "$APKSIGNER" sign \
             --ks "$KEYSTORE_PATH" \
@@ -141,7 +168,19 @@ jobs:
             --out "$SIGNED_APK" \
             "$ALIGNED_APK"
 
-          "$APKSIGNER" verify --verbose --print-certs "$SIGNED_APK"
+          echo "=== 验证 APK 签名 ==="
+
+          "$APKSIGNER" verify \
+            --verbose \
+            --print-certs \
+            "$SIGNED_APK"
+
+          if [ ! -s "$SIGNED_APK" ]; then
+            echo "错误：签名 APK 不存在或文件为空"
+            exit 1
+          fi
+
+          echo "SIGNED_APK=$SIGNED_APK" >> "$GITHUB_ENV"
 
           echo "正式签名完成"
 
@@ -149,6 +188,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: RedFingerGameBot-APK
-          path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/release/app-release.apk
+          path: ${{ runner.temp }}/app-release.apk
           if-no-files-found: error
           retention-days: 30
