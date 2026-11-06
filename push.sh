@@ -1,9 +1,10 @@
-echo "=== 当前运行环境 ==="
-echo "PATH=$PATH"
-echo "PREFIX=$PREFIX"
-echo "curl路径：$(command -v curl)"
-curl --version
+
 #!/system/bin/sh
+
+# ==========================================
+# RedFingerGameBot 自动推送及 APK 下载
+# MT 管理器专用修复版
+# ==========================================
 
 PROJECT_DIR="/storage/emulated/0/RedFingerGameBot_V0_9_3"
 DOWNLOAD_DIR="/storage/emulated/0/Download"
@@ -16,6 +17,10 @@ ARTIFACT_NAME="RedFingerGameBot-APK"
 TERMUX_HOME="/data/data/com.termux/files/home"
 TERMUX_BIN="/data/data/com.termux/files/usr/bin"
 
+# 强制使用 MT 管理器自带 curl
+CURL="/data/user/0/bin.mt.plus/files/term/bin/curl"
+
+# Git 和凭据使用 Termux 环境
 export HOME="$TERMUX_HOME"
 export PATH="$TERMUX_BIN:/system/bin:/system/xbin:$PATH"
 export GIT_TERMINAL_PROMPT=0
@@ -24,8 +29,13 @@ echo "======================================"
 echo " RedFingerGameBot 自动推送及 APK 下载"
 echo "======================================"
 
-# 检查工具
-for cmd in git curl jq unzip; do
+# ==========================================
+# 1. 检查工具
+# ==========================================
+
+echo "[检查] 正在检查运行环境..."
+
+for cmd in git jq unzip; do
     if ! command -v "$cmd" >/dev/null 2>&1; then
         echo "[错误] 缺少工具：$cmd"
         exit 1
@@ -34,7 +44,27 @@ done
 
 GIT="$(command -v git)"
 
-cd "$PROJECT_DIR" || exit 1
+if [ ! -x "$CURL" ]; then
+    echo "[错误] 找不到 MT 管理器 curl：$CURL"
+    exit 1
+fi
+
+if ! "$CURL" --version >/dev/null 2>&1; then
+    echo "[错误] MT 管理器 curl 无法运行"
+    exit 1
+fi
+
+echo "[成功] Git：$GIT"
+echo "[成功] Curl：$CURL"
+
+# ==========================================
+# 2. 检查项目目录
+# ==========================================
+
+cd "$PROJECT_DIR" || {
+    echo "[错误] 项目目录不存在"
+    exit 1
+}
 
 if ! "$GIT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     echo "[错误] 不是 Git 仓库"
@@ -43,39 +73,79 @@ fi
 
 mkdir -p "$OUTPUT_DIR" || exit 1
 
-# 获取 GitHub Token，不显示 Token
+# ==========================================
+# 3. 获取 GitHub Token
+# ==========================================
+
 echo "[1/7] 读取 GitHub 登录凭据..."
 
-CREDENTIALS=$(printf 'protocol=https\nhost=github.com\nusername=20041016\n\n' | "$GIT" credential fill 2>/dev/null)
+CREDENTIALS=$(
+    printf 'protocol=https\nhost=github.com\nusername=20041016\n\n' |
+    "$GIT" credential fill 2>/dev/null
+)
 
-TOKEN=$(printf '%s\n' "$CREDENTIALS" | sed -n 's/^password=//p' | head -n 1)
+TOKEN=$(printf '%s\n' "$CREDENTIALS" |
+    sed -n 's/^password=//p' |
+    head -n 1)
 
 unset CREDENTIALS
 
 if [ -z "$TOKEN" ]; then
-    echo "[错误] 没有读取到已保存的 GitHub Token"
-    echo "请先在 Termux 成功进行一次 GitHub HTTPS 认证并保存凭据。"
+    echo "[错误] 没有读取到 GitHub Token"
+    echo "请先在 Termux 保存 GitHub HTTPS 登录凭据"
     exit 1
 fi
 
-# 查找最新 ZIP
+# ==========================================
+# 4. 查找源码 ZIP
+# ==========================================
+
 echo "[2/7] 查找源码 ZIP..."
 
 LATEST_ZIP=$(ls -t "$DOWNLOAD_DIR"/*.zip 2>/dev/null | head -n 1)
 
 if [ -z "$LATEST_ZIP" ] || [ ! -f "$LATEST_ZIP" ]; then
-    echo "[错误] Download 中没有 ZIP"
+    echo "[错误] Download 中没有 ZIP 文件"
     exit 1
 fi
 
 echo "源码：$(basename "$LATEST_ZIP")"
 
-unzip -t "$LATEST_ZIP" >/dev/null 2>&1 || {
+if ! unzip -t "$LATEST_ZIP" >/dev/null 2>&1; then
     echo "[错误] ZIP 文件损坏"
     exit 1
-}
+fi
 
-# 保存本地已有修改
+# 检查完整 Android 项目结构
+ZIP_LIST=$(unzip -Z1 "$LATEST_ZIP" 2>/dev/null)
+
+if ! printf '%s\n' "$ZIP_LIST" |
+    grep -Eq '(^|/)settings\.gradle(\.kts)?$'; then
+    echo "[错误] ZIP 缺少 settings.gradle"
+    echo "请上传完整 Android 项目源码"
+    exit 1
+fi
+
+if ! printf '%s\n' "$ZIP_LIST" |
+    grep -Eq '(^|/)app/build\.gradle(\.kts)?$'; then
+    echo "[错误] ZIP 缺少 app/build.gradle"
+    exit 1
+fi
+
+if ! printf '%s\n' "$ZIP_LIST" |
+    grep -Eq '(^|/)app/src/'; then
+    echo "[错误] ZIP 缺少 app/src 源码目录"
+    exit 1
+fi
+
+unset ZIP_LIST
+
+echo "[成功] 源码 ZIP 检查通过"
+
+# ==========================================
+# 5. 保存本地修改
+# ==========================================
+
 echo "[3/7] 保存本地修改..."
 
 "$GIT" add -A || exit 1
@@ -96,7 +166,7 @@ echo "同步 GitHub..."
 cp -f "$LATEST_ZIP" "$PROJECT_DIR/source.zip" || exit 1
 
 if "$GIT" diff --quiet -- source.zip; then
-    echo "[提示] source.zip 没有变化，本次不会触发新的构建。"
+    echo "[提示] source.zip 没有变化，本次不会触发新的构建"
     exit 1
 fi
 
@@ -106,15 +176,24 @@ fi
 
 COMMIT_SHA=$("$GIT" rev-parse HEAD)
 
-# 推送
+# ==========================================
+# 6. 推送 GitHub
+# ==========================================
+
 echo "[4/7] 推送 GitHub..."
 
-"$GIT" push origin "$BRANCH" || exit 1
+"$GIT" push origin "$BRANCH" || {
+    echo "[错误] GitHub 推送失败"
+    exit 1
+}
 
 echo "本次提交：$COMMIT_SHA"
 
-# 查询本次提交对应的构建
 API="https://api.github.com/repos/$REPO"
+
+# ==========================================
+# 7. 查询 GitHub Actions
+# ==========================================
 
 echo "[5/7] 等待 GitHub Actions 构建..."
 
@@ -122,17 +201,22 @@ RUN_ID=""
 COUNT=0
 
 while [ "$COUNT" -lt 160 ]; do
-    RESPONSE=$(curl -fsS \
+
+    RESPONSE=$("$CURL" -fsS \
         -H "Authorization: Bearer $TOKEN" \
         -H "Accept: application/vnd.github+json" \
         "$API/actions/runs?head_sha=$COMMIT_SHA&event=push&per_page=10") || {
             echo "[错误] 查询构建失败"
+            echo "请检查 MT 管理器 curl 和网络连接"
             exit 1
         }
 
-    RUN_ID=$(printf '%s' "$RESPONSE" | jq -r \
+    RUN_ID=$(printf '%s' "$RESPONSE" |
+        jq -r \
         --arg sha "$COMMIT_SHA" \
-        '.workflow_runs[]? | select(.head_sha == $sha and .event == "push") | .id' | head -n 1)
+        '.workflow_runs[]? |
+        select(.head_sha == $sha and .event == "push") |
+        .id' | head -n 1)
 
     unset RESPONSE
 
@@ -150,26 +234,60 @@ if [ -z "$RUN_ID" ]; then
     exit 1
 fi
 
+echo "构建编号：$RUN_ID"
+
+# ==========================================
+# 8. 等待构建完成
+# ==========================================
+
 COUNT=0
 
 while [ "$COUNT" -lt 160 ]; do
-    RUN_INFO=$(curl -fsS \
+
+    RUN_INFO=$("$CURL" -fsS \
         -H "Authorization: Bearer $TOKEN" \
         -H "Accept: application/vnd.github+json" \
-        "$API/actions/runs/$RUN_ID") || exit 1
+        "$API/actions/runs/$RUN_ID") || {
+            echo "[错误] 获取构建状态失败"
+            exit 1
+        }
 
     STATUS=$(printf '%s' "$RUN_INFO" | jq -r '.status')
     CONCLUSION=$(printf '%s' "$RUN_INFO" | jq -r '.conclusion // empty')
 
     unset RUN_INFO
 
-    echo "构建状态：$STATUS ${CONCLUSION}"
+    echo "构建状态：$STATUS $CONCLUSION"
 
     if [ "$STATUS" = "completed" ]; then
+
         if [ "$CONCLUSION" != "success" ]; then
+
+            echo "======================================"
             echo "[错误] GitHub Actions 构建失败：$CONCLUSION"
+            echo "======================================"
+
+            echo "正在查询具体失败步骤..."
+
+            JOBS=$("$CURL" -fsS \
+                -H "Authorization: Bearer $TOKEN" \
+                -H "Accept: application/vnd.github+json" \
+                "$API/actions/runs/$RUN_ID/jobs?per_page=100")
+
+            if [ -n "$JOBS" ]; then
+                printf '%s\n' "$JOBS" | jq -r '
+                    .jobs[]? |
+                    "Job: " + .name,
+                    (.steps[]? |
+                    select(.conclusion == "failure") |
+                    "失败步骤：" + .name)
+                '
+            fi
+
+            unset JOBS
             exit 1
         fi
+
         break
     fi
 
@@ -182,17 +300,26 @@ if [ "$COUNT" -ge 160 ]; then
     exit 1
 fi
 
-# 获取 Artifact
+# ==========================================
+# 9. 下载 Artifact
+# ==========================================
+
 echo "[6/7] 下载构建产物..."
 
-ARTIFACTS=$(curl -fsS \
+ARTIFACTS=$("$CURL" -fsS \
     -H "Authorization: Bearer $TOKEN" \
     -H "Accept: application/vnd.github+json" \
-    "$API/actions/runs/$RUN_ID/artifacts") || exit 1
+    "$API/actions/runs/$RUN_ID/artifacts") || {
+        echo "[错误] 获取 Artifact 失败"
+        exit 1
+    }
 
-ARTIFACT_ID=$(printf '%s' "$ARTIFACTS" | jq -r \
+ARTIFACT_ID=$(printf '%s' "$ARTIFACTS" |
+    jq -r \
     --arg name "$ARTIFACT_NAME" \
-    '.artifacts[]? | select(.name == $name and .expired == false) | .id' | head -n 1)
+    '.artifacts[]? |
+    select(.name == $name and .expired == false) |
+    .id' | head -n 1)
 
 unset ARTIFACTS
 
@@ -202,29 +329,40 @@ if [ -z "$ARTIFACT_ID" ]; then
 fi
 
 TEMP_DIR="$PROJECT_DIR/.apk_download"
+
 mkdir -p "$TEMP_DIR" || exit 1
 
 ARTIFACT_ZIP="$TEMP_DIR/artifact.zip"
 
-curl -fL \
+"$CURL" -fL \
     -H "Authorization: Bearer $TOKEN" \
     -H "Accept: application/vnd.github+json" \
     "$API/actions/artifacts/$ARTIFACT_ID/zip" \
-    -o "$ARTIFACT_ZIP" || exit 1
+    -o "$ARTIFACT_ZIP" || {
+        echo "[错误] 下载 Artifact 失败"
+        exit 1
+    }
 
 unset TOKEN
 
-unzip -t "$ARTIFACT_ZIP" >/dev/null 2>&1 || {
+if ! unzip -t "$ARTIFACT_ZIP" >/dev/null 2>&1; then
     echo "[错误] Artifact ZIP 损坏"
     exit 1
-}
+fi
 
-# 解压 APK
+# ==========================================
+# 10. 解压 APK
+# ==========================================
+
 echo "[7/7] 解压 APK..."
 
-unzip -o "$ARTIFACT_ZIP" -d "$TEMP_DIR/extracted" >/dev/null || exit 1
+rm -rf "$TEMP_DIR/extracted"
 
-APK=$(find "$TEMP_DIR/extracted" -type f -name "app-debug.apk" | head -n 1)
+unzip -o "$ARTIFACT_ZIP" \
+    -d "$TEMP_DIR/extracted" >/dev/null || exit 1
+
+APK=$(find "$TEMP_DIR/extracted" \
+    -type f -name "app-debug.apk" | head -n 1)
 
 if [ -z "$APK" ] || [ ! -f "$APK" ]; then
     echo "[错误] 构建产物中没有找到 app-debug.apk"
@@ -235,10 +373,16 @@ DEST="$OUTPUT_DIR/RedFingerGameBot.apk"
 
 cp -f "$APK" "$DEST" || exit 1
 
+# ==========================================
+# 完成
+# ==========================================
+
 echo "======================================"
 echo "          全部任务完成！"
 echo "======================================"
+
 echo "APK 位置：$DEST"
 echo "构建编号：$RUN_ID"
 echo "提交 SHA：$COMMIT_SHA"
 
+exit 0
