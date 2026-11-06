@@ -3,7 +3,7 @@
 
 # ==========================================
 # RedFingerGameBot 自动推送及 APK 下载
-# MT 管理器专用修复版
+# MT 管理器专用 Release 正式签名版
 # ==========================================
 
 PROJECT_DIR="/storage/emulated/0/RedFingerGameBot_V0_9_3"
@@ -13,6 +13,7 @@ OUTPUT_DIR="/storage/emulated/0/测试"
 REPO="20041016/RedFingerGameBot"
 BRANCH="main"
 ARTIFACT_NAME="RedFingerGameBot-APK"
+WORKFLOW_NAME="Build RedFinger GameBot APK"
 
 TERMUX_HOME="/data/data/com.termux/files/home"
 TERMUX_BIN="/data/data/com.termux/files/usr/bin"
@@ -20,13 +21,12 @@ TERMUX_BIN="/data/data/com.termux/files/usr/bin"
 # 强制使用 MT 管理器自带 curl
 CURL="/data/user/0/bin.mt.plus/files/term/bin/curl"
 
-# Git 和凭据使用 Termux 环境
 export HOME="$TERMUX_HOME"
 export PATH="$TERMUX_BIN:/system/bin:/system/xbin:$PATH"
 export GIT_TERMINAL_PROMPT=0
 
 echo "======================================"
-echo " RedFingerGameBot 自动推送及 APK 下载"
+echo " RedFingerGameBot Release 自动构建下载"
 echo "======================================"
 
 # ==========================================
@@ -96,6 +96,8 @@ if [ -z "$TOKEN" ]; then
     exit 1
 fi
 
+API="https://api.github.com/repos/$REPO"
+
 # ==========================================
 # 4. 查找源码 ZIP
 # ==========================================
@@ -116,13 +118,11 @@ if ! unzip -t "$LATEST_ZIP" >/dev/null 2>&1; then
     exit 1
 fi
 
-# 检查完整 Android 项目结构
 ZIP_LIST=$(unzip -Z1 "$LATEST_ZIP" 2>/dev/null)
 
 if ! printf '%s\n' "$ZIP_LIST" |
     grep -Eq '(^|/)settings\.gradle(\.kts)?$'; then
     echo "[错误] ZIP 缺少 settings.gradle"
-    echo "请上传完整 Android 项目源码"
     exit 1
 fi
 
@@ -143,10 +143,10 @@ unset ZIP_LIST
 echo "[成功] 源码 ZIP 检查通过"
 
 # ==========================================
-# 5. 保存本地修改
+# 5. 判断源码是否更新
 # ==========================================
 
-echo "[3/7] 保存本地修改..."
+echo "[3/7] 检查 source.zip 是否更新..."
 
 "$GIT" add -A || exit 1
 
@@ -154,7 +154,6 @@ if ! "$GIT" diff --cached --quiet; then
     "$GIT" commit -m "Save local changes before update" || exit 1
 fi
 
-# 同步远程
 echo "同步 GitHub..."
 
 "$GIT" pull --rebase origin "$BRANCH" || {
@@ -162,146 +161,197 @@ echo "同步 GitHub..."
     exit 1
 }
 
-# 替换源码 ZIP
 cp -f "$LATEST_ZIP" "$PROJECT_DIR/source.zip" || exit 1
 
 if "$GIT" diff --quiet -- source.zip; then
-    echo "[提示] source.zip 没有变化，本次不会触发新的构建"
-    exit 1
-fi
 
-"$GIT" add source.zip || exit 1
+    echo "======================================"
+    echo "[提示] source.zip 没有更新"
+    echo "[模式] 下载最近一次成功构建的 APK"
+    echo "======================================"
 
-"$GIT" commit -m "Update source.zip: $(date '+%Y-%m-%d %H:%M:%S')" || exit 1
+    DOWNLOAD_MODE="latest"
 
-COMMIT_SHA=$("$GIT" rev-parse HEAD)
+else
 
-# ==========================================
-# 6. 推送 GitHub
-# ==========================================
+    echo "======================================"
+    echo "[提示] 检测到 source.zip 更新"
+    echo "[模式] 推送源码并构建新的 APK"
+    echo "======================================"
 
-echo "[4/7] 推送 GitHub..."
+    "$GIT" add source.zip || exit 1
 
-"$GIT" push origin "$BRANCH" || {
-    echo "[错误] GitHub 推送失败"
-    exit 1
-}
+    "$GIT" commit -m "Update source.zip: $(date '+%Y-%m-%d %H:%M:%S')" || exit 1
 
-echo "本次提交：$COMMIT_SHA"
+    COMMIT_SHA=$("$GIT" rev-parse HEAD)
 
-API="https://api.github.com/repos/$REPO"
+    # ======================================
+    # 6. 推送 GitHub
+    # ======================================
 
-# ==========================================
-# 7. 查询 GitHub Actions
-# ==========================================
+    echo "[4/7] 推送 GitHub..."
 
-echo "[5/7] 等待 GitHub Actions 构建..."
+    "$GIT" push origin "$BRANCH" || {
+        echo "[错误] GitHub 推送失败"
+        exit 1
+    }
 
-RUN_ID=""
-COUNT=0
+    echo "本次提交：$COMMIT_SHA"
 
-while [ "$COUNT" -lt 160 ]; do
+    # ======================================
+    # 7. 等待本次构建任务创建
+    # ======================================
 
-    RESPONSE=$("$CURL" -fsS \
-        -H "Authorization: Bearer $TOKEN" \
-        -H "Accept: application/vnd.github+json" \
-        "$API/actions/runs?head_sha=$COMMIT_SHA&event=push&per_page=10") || {
-            echo "[错误] 查询构建失败"
-            echo "请检查 MT 管理器 curl 和网络连接"
-            exit 1
-        }
+    echo "[5/7] 等待本次 GitHub Actions 构建..."
 
-    RUN_ID=$(printf '%s' "$RESPONSE" |
-        jq -r \
-        --arg sha "$COMMIT_SHA" \
-        '.workflow_runs[]? |
-        select(.head_sha == $sha and .event == "push") |
-        .id' | head -n 1)
+    RUN_ID=""
+    COUNT=0
 
-    unset RESPONSE
+    while [ "$COUNT" -lt 160 ]; do
 
-    if [ -n "$RUN_ID" ]; then
-        break
-    fi
+        RESPONSE=$("$CURL" -fsS \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "$API/actions/runs?head_sha=$COMMIT_SHA&event=push&per_page=20") || {
+                echo "[错误] 查询构建失败"
+                exit 1
+            }
 
-    COUNT=$((COUNT + 1))
-    echo "等待构建任务创建... ($COUNT/160)"
-    sleep 15
-done
+        RUN_ID=$(printf '%s' "$RESPONSE" |
+            jq -r \
+            --arg sha "$COMMIT_SHA" \
+            --arg name "$WORKFLOW_NAME" \
+            '.workflow_runs[]? |
+            select(
+                .head_sha == $sha and
+                .event == "push" and
+                .name == $name
+            ) |
+            .id' | head -n 1)
 
-if [ -z "$RUN_ID" ]; then
-    echo "[错误] 等待超时，没有找到本次构建"
-    exit 1
-fi
+        unset RESPONSE
 
-echo "构建编号：$RUN_ID"
-
-# ==========================================
-# 8. 等待构建完成
-# ==========================================
-
-COUNT=0
-
-while [ "$COUNT" -lt 160 ]; do
-
-    RUN_INFO=$("$CURL" -fsS \
-        -H "Authorization: Bearer $TOKEN" \
-        -H "Accept: application/vnd.github+json" \
-        "$API/actions/runs/$RUN_ID") || {
-            echo "[错误] 获取构建状态失败"
-            exit 1
-        }
-
-    STATUS=$(printf '%s' "$RUN_INFO" | jq -r '.status')
-    CONCLUSION=$(printf '%s' "$RUN_INFO" | jq -r '.conclusion // empty')
-
-    unset RUN_INFO
-
-    echo "构建状态：$STATUS $CONCLUSION"
-
-    if [ "$STATUS" = "completed" ]; then
-
-        if [ "$CONCLUSION" != "success" ]; then
-
-            echo "======================================"
-            echo "[错误] GitHub Actions 构建失败：$CONCLUSION"
-            echo "======================================"
-
-            echo "正在查询具体失败步骤..."
-
-            JOBS=$("$CURL" -fsS \
-                -H "Authorization: Bearer $TOKEN" \
-                -H "Accept: application/vnd.github+json" \
-                "$API/actions/runs/$RUN_ID/jobs?per_page=100")
-
-            if [ -n "$JOBS" ]; then
-                printf '%s\n' "$JOBS" | jq -r '
-                    .jobs[]? |
-                    "Job: " + .name,
-                    (.steps[]? |
-                    select(.conclusion == "failure") |
-                    "失败步骤：" + .name)
-                '
-            fi
-
-            unset JOBS
-            exit 1
+        if [ -n "$RUN_ID" ]; then
+            break
         fi
 
-        break
+        COUNT=$((COUNT + 1))
+        echo "等待构建任务创建... ($COUNT/160)"
+        sleep 15
+    done
+
+    if [ -z "$RUN_ID" ]; then
+        echo "[错误] 等待超时，没有找到本次构建"
+        exit 1
     fi
 
-    COUNT=$((COUNT + 1))
-    sleep 15
-done
+    echo "构建编号：$RUN_ID"
 
-if [ "$COUNT" -ge 160 ]; then
-    echo "[错误] 构建等待超时"
-    exit 1
+    # ======================================
+    # 8. 等待构建完成
+    # ======================================
+
+    COUNT=0
+
+    while [ "$COUNT" -lt 160 ]; do
+
+        RUN_INFO=$("$CURL" -fsS \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "$API/actions/runs/$RUN_ID") || {
+                echo "[错误] 获取构建状态失败"
+                exit 1
+            }
+
+        STATUS=$(printf '%s' "$RUN_INFO" | jq -r '.status')
+        CONCLUSION=$(printf '%s' "$RUN_INFO" | jq -r '.conclusion // empty')
+
+        unset RUN_INFO
+
+        echo "构建状态：$STATUS $CONCLUSION"
+
+        if [ "$STATUS" = "completed" ]; then
+
+            if [ "$CONCLUSION" != "success" ]; then
+
+                echo "======================================"
+                echo "[错误] GitHub Actions 构建失败：$CONCLUSION"
+                echo "======================================"
+
+                JOBS=$("$CURL" -fsS \
+                    -H "Authorization: Bearer $TOKEN" \
+                    -H "Accept: application/vnd.github+json" \
+                    "$API/actions/runs/$RUN_ID/jobs?per_page=100")
+
+                if [ -n "$JOBS" ]; then
+                    printf '%s\n' "$JOBS" | jq -r '
+                        .jobs[]? |
+                        "Job: " + .name,
+                        (.steps[]? |
+                        select(.conclusion == "failure") |
+                        "失败步骤：" + .name)
+                    '
+                fi
+
+                unset JOBS
+                exit 1
+            fi
+
+            break
+        fi
+
+        COUNT=$((COUNT + 1))
+        sleep 15
+    done
+
+    if [ "$COUNT" -ge 160 ]; then
+        echo "[错误] 构建等待超时"
+        exit 1
+    fi
+
 fi
 
 # ==========================================
-# 9. 下载 Artifact
+# 9. 如果源码没有更新，查找最新成功构建
+# ==========================================
+
+if [ "$DOWNLOAD_MODE" = "latest" ]; then
+
+    echo "[4/7] 查询最近一次成功构建..."
+
+    RUNS=$("$CURL" -fsS \
+        -H "Authorization: Bearer $TOKEN" \
+        -H "Accept: application/vnd.github+json" \
+        "$API/actions/runs?branch=$BRANCH&status=success&per_page=100") || {
+            echo "[错误] 查询历史构建失败"
+            exit 1
+        }
+
+    RUN_ID=$(printf '%s' "$RUNS" |
+        jq -r \
+        --arg name "$WORKFLOW_NAME" \
+        --arg branch "$BRANCH" \
+        '.workflow_runs[]? |
+        select(
+            .name == $name and
+            .head_branch == $branch and
+            .conclusion == "success"
+        ) |
+        .id' | head -n 1)
+
+    unset RUNS
+
+    if [ -z "$RUN_ID" ]; then
+        echo "[错误] 没有找到最近一次成功的构建"
+        exit 1
+    fi
+
+    echo "找到最近一次成功构建：$RUN_ID"
+
+fi
+
+# ==========================================
+# 10. 下载 Artifact
 # ==========================================
 
 echo "[6/7] 下载构建产物..."
@@ -325,6 +375,7 @@ unset ARTIFACTS
 
 if [ -z "$ARTIFACT_ID" ]; then
     echo "[错误] 没找到构建产物：$ARTIFACT_NAME"
+    echo "可能该构建没有上传 APK，或者 Artifact 已过期"
     exit 1
 fi
 
@@ -351,10 +402,10 @@ if ! unzip -t "$ARTIFACT_ZIP" >/dev/null 2>&1; then
 fi
 
 # ==========================================
-# 10. 解压 APK
+# 11. 解压 Release APK
 # ==========================================
 
-echo "[7/7] 解压 APK..."
+echo "[7/7] 解压 Release APK..."
 
 rm -rf "$TEMP_DIR/extracted"
 
@@ -362,10 +413,11 @@ unzip -o "$ARTIFACT_ZIP" \
     -d "$TEMP_DIR/extracted" >/dev/null || exit 1
 
 APK=$(find "$TEMP_DIR/extracted" \
-    -type f -name "app-debug.apk" | head -n 1)
+    -type f -name "app-release.apk" | head -n 1)
 
 if [ -z "$APK" ] || [ ! -f "$APK" ]; then
-    echo "[错误] 构建产物中没有找到 app-debug.apk"
+    echo "[错误] 构建产物中没有找到 app-release.apk"
+    echo "请确认 GitHub Actions 上传的是 Release 正式签名 APK"
     exit 1
 fi
 
@@ -381,8 +433,19 @@ echo "======================================"
 echo "          全部任务完成！"
 echo "======================================"
 
+if [ "$DOWNLOAD_MODE" = "latest" ]; then
+    echo "运行模式：下载最近一次成功构建"
+else
+    echo "运行模式：上传新源码并构建"
+fi
+
 echo "APK 位置：$DEST"
 echo "构建编号：$RUN_ID"
-echo "提交 SHA：$COMMIT_SHA"
+
+if [ -n "$COMMIT_SHA" ]; then
+    echo "提交 SHA：$COMMIT_SHA"
+fi
+
+echo "APK 类型：Release 正式签名版"
 
 exit 0

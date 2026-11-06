@@ -25,9 +25,30 @@ export HOME="$TERMUX_HOME"
 export PATH="$TERMUX_BIN:/system/bin:/system/xbin:$PATH"
 export GIT_TERMINAL_PROMPT=0
 
+# 临时目录
+TEMP_DIR="$PROJECT_DIR/.apk_download"
+ARTIFACT_ZIP="$TEMP_DIR/artifact.zip"
+EXTRACT_DIR="$TEMP_DIR/extracted"
+
+# 最终 APK
+DEST="$OUTPUT_DIR/RedFingerGameBot.apk"
+
 echo "======================================"
 echo " RedFingerGameBot Release 自动构建下载"
 echo "======================================"
+
+# ==========================================
+# 临时文件清理函数
+# ==========================================
+
+cleanup() {
+    echo "[清理] 正在删除临时下载文件..."
+    rm -rf "$TEMP_DIR"
+    echo "[清理] 临时文件清理完成"
+}
+
+# 异常退出时也尝试清理
+trap cleanup EXIT HUP INT TERM
 
 # ==========================================
 # 1. 检查工具
@@ -379,11 +400,15 @@ if [ -z "$ARTIFACT_ID" ]; then
     exit 1
 fi
 
-TEMP_DIR="$PROJECT_DIR/.apk_download"
+# ==========================================
+# 11. 下载并解压
+# ==========================================
 
-mkdir -p "$TEMP_DIR" || exit 1
+echo "[7/7] 下载并解压 Release APK..."
 
-ARTIFACT_ZIP="$TEMP_DIR/artifact.zip"
+# 清理之前可能残留的临时目录
+rm -rf "$TEMP_DIR"
+mkdir -p "$EXTRACT_DIR" || exit 1
 
 "$CURL" -fL \
     -H "Authorization: Bearer $TOKEN" \
@@ -396,37 +421,83 @@ ARTIFACT_ZIP="$TEMP_DIR/artifact.zip"
 
 unset TOKEN
 
+if [ ! -s "$ARTIFACT_ZIP" ]; then
+    echo "[错误] 下载的 Artifact 文件为空"
+    exit 1
+fi
+
 if ! unzip -t "$ARTIFACT_ZIP" >/dev/null 2>&1; then
     echo "[错误] Artifact ZIP 损坏"
     exit 1
 fi
 
-# ==========================================
-# 11. 解压 Release APK
-# ==========================================
-
-echo "[7/7] 解压 Release APK..."
-
-rm -rf "$TEMP_DIR/extracted"
-
 unzip -o "$ARTIFACT_ZIP" \
-    -d "$TEMP_DIR/extracted" >/dev/null || exit 1
+    -d "$EXTRACT_DIR" >/dev/null || {
+        echo "[错误] Artifact 解压失败"
+        exit 1
+    }
 
-APK=$(find "$TEMP_DIR/extracted" \
-    -type f -name "app-release.apk" | head -n 1)
+# 查找 APK
+APK=$(find "$EXTRACT_DIR" \
+    -type f -name "app-release.apk" -print -quit)
 
-if [ -z "$APK" ] || [ ! -f "$APK" ]; then
-    echo "[错误] 构建产物中没有找到 app-release.apk"
-    echo "请确认 GitHub Actions 上传的是 Release 正式签名 APK"
+if [ -z "$APK" ] || [ ! -s "$APK" ]; then
+    echo "[错误] 构建产物中没有找到有效的 app-release.apk"
     exit 1
 fi
 
-DEST="$OUTPUT_DIR/RedFingerGameBot.apk"
+# ==========================================
+# 12. 安全复制 APK
+# ==========================================
 
-cp -f "$APK" "$DEST" || exit 1
+echo "[复制] 正在安装包到目标目录..."
+
+NEW_APK="$OUTPUT_DIR/RedFingerGameBot.new.apk"
+
+rm -f "$NEW_APK"
+
+cp -f "$APK" "$NEW_APK" || {
+    echo "[错误] APK 复制失败"
+    exit 1
+}
+
+if [ ! -s "$NEW_APK" ]; then
+    echo "[错误] 新 APK 文件为空"
+    rm -f "$NEW_APK"
+    exit 1
+fi
+
+# 新文件复制成功后再替换旧文件
+mv -f "$NEW_APK" "$DEST" || {
+    echo "[错误] 替换最终 APK 失败"
+    rm -f "$NEW_APK"
+    exit 1
+}
+
+if [ ! -s "$DEST" ]; then
+    echo "[错误] 最终 APK 检查失败"
+    exit 1
+fi
 
 # ==========================================
-# 完成
+# 13. 清理临时文件
+# ==========================================
+
+echo "[清理] 删除 Artifact 压缩包..."
+
+rm -f "$ARTIFACT_ZIP"
+
+echo "[清理] 删除临时解压目录..."
+
+rm -rf "$EXTRACT_DIR"
+
+# 删除空临时目录
+rmdir "$TEMP_DIR" 2>/dev/null || true
+
+echo "[成功] 临时文件已清理"
+
+# ==========================================
+# 14. 完成
 # ==========================================
 
 echo "======================================"
@@ -447,5 +518,6 @@ if [ -n "$COMMIT_SHA" ]; then
 fi
 
 echo "APK 类型：Release 正式签名版"
+echo "临时文件：已删除"
 
 exit 0
