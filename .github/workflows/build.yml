@@ -11,17 +11,37 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Extract source
+        shell: bash
         run: |
-          mkdir extracted
+          set -e
+          mkdir -p extracted
           unzip source.zip -d extracted
-          PROJECT_DIR=$(find extracted -name settings.gradle -o -name settings.gradle.kts | head -n 1 | xargs dirname)
-          echo "PROJECT_DIR=$PROJECT_DIR" >> $GITHUB_ENV
-          test -n "$PROJECT_DIR"
+
+          PROJECT_FILE=$(find extracted -type f \
+            \( -name settings.gradle -o -name settings.gradle.kts \) \
+            -print -quit)
+
+          if [ -z "$PROJECT_FILE" ]; then
+            echo "错误：没有找到 settings.gradle"
+            exit 1
+          fi
+
+          PROJECT_DIR=$(dirname "$PROJECT_FILE")
+
+          if [ ! -f "$PROJECT_DIR/app/build.gradle" ] && \
+             [ ! -f "$PROJECT_DIR/app/build.gradle.kts" ]; then
+            echo "错误：没有找到 app/build.gradle"
+            exit 1
+          fi
+
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          echo "项目目录：$PROJECT_DIR"
 
       - name: Setup Java
         uses: actions/setup-java@v4
@@ -44,14 +64,91 @@ jobs:
           yes | sdkmanager --licenses || true
           sdkmanager "platforms;android-35" "build-tools;35.0.0"
 
-      - name: Build APK
+      - name: Build Release APK
+        shell: bash
         run: |
+          set -e
           cd "$PROJECT_DIR"
-          gradle --no-daemon :app:assembleDebug
+          gradle --no-daemon :app:assembleRelease
 
-      - name: Upload APK
+          APK_DIR="$PROJECT_DIR/app/build/outputs/apk/release"
+
+          UNSIGNED_APK=$(find "$APK_DIR" -maxdepth 1 \
+            -type f -name '*.apk' -print -quit)
+
+          if [ -z "$UNSIGNED_APK" ]; then
+            echo "错误：没有找到 Release APK"
+            exit 1
+          fi
+
+          echo "UNSIGNED_APK=$UNSIGNED_APK" >> "$GITHUB_ENV"
+
+      - name: Prepare signing keystore
+        shell: bash
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+        run: |
+          set -e
+
+          if [ -z "$KEYSTORE_BASE64" ] || [ -z "$KEYSTORE_PASSWORD" ]; then
+            echo "错误：缺少签名配置"
+            exit 1
+          fi
+
+          echo "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/release.jks"
+
+          if [ ! -s "$RUNNER_TEMP/release.jks" ]; then
+            echo "错误：签名文件生成失败"
+            exit 1
+          fi
+
+          keytool -list \
+            -keystore "$RUNNER_TEMP/release.jks" \
+            -storepass "$KEYSTORE_PASSWORD"
+
+          echo "KEYSTORE_PATH=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+
+      - name: Sign Release APK
+        shell: bash
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          set -e
+
+          BUILD_TOOLS="$ANDROID_HOME/build-tools/35.0.0"
+          ZIPALIGN="$BUILD_TOOLS/zipalign"
+          APKSIGNER="$BUILD_TOOLS/apksigner"
+
+          if [ -z "$KEY_ALIAS" ] || [ -z "$KEY_PASSWORD" ]; then
+            echo "错误：签名 Secrets 不完整"
+            exit 1
+          fi
+
+          OUTPUT_DIR="$PROJECT_DIR/app/build/outputs/apk/release"
+          ALIGNED_APK="$OUTPUT_DIR/app-release-aligned.apk"
+          SIGNED_APK="$OUTPUT_DIR/app-release.apk"
+
+          "$ZIPALIGN" -f -v 4 "$UNSIGNED_APK" "$ALIGNED_APK"
+
+          "$APKSIGNER" sign \
+            --ks "$KEYSTORE_PATH" \
+            --ks-key-alias "$KEY_ALIAS" \
+            --ks-pass env:KEYSTORE_PASSWORD \
+            --key-pass env:KEY_PASSWORD \
+            --out "$SIGNED_APK" \
+            "$ALIGNED_APK"
+
+          "$APKSIGNER" verify --verbose --print-certs "$SIGNED_APK"
+
+          echo "正式签名完成"
+
+      - name: Upload Signed APK
         uses: actions/upload-artifact@v4
         with:
           name: RedFingerGameBot-APK
-          path: extracted/**/app/build/outputs/apk/debug/app-debug.apk
+          path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
+          retention-days: 30
