@@ -1,4 +1,3 @@
-
 name: Build RedFinger GameBot APK
 
 on:
@@ -11,236 +10,58 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
-      # 1. 下载 GitHub 仓库源码
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 2. 解压源码并定位 Android 项目
       - name: Extract source
-        shell: bash
         run: |
-          set -e
+          mkdir extracted
+          unzip source.zip -d extracted
+          PROJECT_DIR=$(find extracted -name settings.gradle -o -name settings.gradle.kts | head -n 1 | xargs dirname)
+          echo "PROJECT_DIR=$PROJECT_DIR" >> $GITHUB_ENV
+          test -n "$PROJECT_DIR"
 
-          EXTRACT_DIR="$GITHUB_WORKSPACE/extracted"
-
-          mkdir -p "$EXTRACT_DIR"
-          unzip -o "$GITHUB_WORKSPACE/source.zip" -d "$EXTRACT_DIR"
-
-          PROJECT_FILE=$(find "$EXTRACT_DIR" -type f \
-            \( -name settings.gradle -o -name settings.gradle.kts \) \
-            -print -quit)
-
-          if [ -z "$PROJECT_FILE" ]; then
-            echo "错误：没有找到 settings.gradle"
-            exit 1
-          fi
-
-          # 关键修复：转换为绝对路径
-          PROJECT_DIR="$(cd "$(dirname "$PROJECT_FILE")" && pwd)"
-
-          if [ ! -f "$PROJECT_DIR/app/build.gradle" ] && \
-             [ ! -f "$PROJECT_DIR/app/build.gradle.kts" ]; then
-            echo "错误：没有找到 app/build.gradle"
-            exit 1
-          fi
-
-          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-
-          echo "================================"
-          echo "找到 Android 项目"
-          echo "项目目录：$PROJECT_DIR"
-          echo "================================"
-
-      # 3. 安装 Java 17
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      # 4. 安装 Android SDK
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
         with:
           packages: 'platform-tools'
 
-      # 5. 安装 Gradle 8.13
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.13'
 
-      # 6. 安装 Android SDK 构建组件
       - name: Install Android SDK packages
-        shell: bash
         run: |
-          set -e
-
           yes | sdkmanager --licenses || true
+          sdkmanager "platforms;android-35" "build-tools;35.0.0"
 
-          sdkmanager \
-            "platforms;android-35" \
-            "build-tools;35.0.0"
-
-      # 7. 构建 Release APK
-      - name: Build Release APK
-        shell: bash
+      # ===== 新增：把 Secrets 里的 Base64 还原成 .jks 文件 =====
+      - name: Decode Keystore
         run: |
-          set -e
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | tr -d '\n\r ' | base64 --decode > $RUNNER_TEMP/my-release-key.jks
 
-          echo "================================"
-          echo "项目目录：$PROJECT_DIR"
-          echo "当前目录：$PWD"
-          echo "================================"
-
-          if [ ! -d "$PROJECT_DIR" ]; then
-            echo "错误：项目目录不存在"
-            exit 1
-          fi
-
+      # ===== 修改：assembleDebug → assembleRelease，并注入签名参数 =====
+      - name: Build Signed Release APK
+        run: |
           cd "$PROJECT_DIR"
+          gradle --no-daemon :app:assembleRelease \
+            -Pandroid.injected.signing.store.file=$RUNNER_TEMP/my-release-key.jks \
+            -Pandroid.injected.signing.store.password="${{ secrets.KEYSTORE_PASSWORD }}" \
+            -Pandroid.injected.signing.key.alias="${{ secrets.KEY_ALIAS }}" \
+            -Pandroid.injected.signing.key.password="${{ secrets.KEY_PASSWORD }}"
 
-          echo "=== 开始构建 Release APK ==="
-
-          gradle --no-daemon :app:assembleRelease
-
-          echo "=== Gradle 构建完成，搜索 APK ==="
-
-          # 搜索项目构建输出目录中的 APK
-          find "$PROJECT_DIR" -type f \
-            -path '*/build/outputs/*' \
-            -name "*.apk" \
-            -print
-
-          mapfile -t APK_FILES < <(
-            find "$PROJECT_DIR" -type f \
-              -path '*/build/outputs/*' \
-              -name "*.apk" \
-              ! -iname "*debug*.apk" \
-              ! -iname "*aligned*.apk" \
-              ! -iname "*unaligned*.apk"
-          )
-
-          if [ "${#APK_FILES[@]}" -eq 0 ]; then
-            echo "错误：Gradle 构建成功，但没有找到 Release APK"
-            exit 1
-          fi
-
-          if [ "${#APK_FILES[@]}" -gt 1 ]; then
-            echo "错误：发现多个 APK，无法自动确定目标文件："
-            printf '%s\n' "${APK_FILES[@]}"
-            exit 1
-          fi
-
-          UNSIGNED_APK="${APK_FILES[0]}"
-
-          if [ ! -s "$UNSIGNED_APK" ]; then
-            echo "错误：APK 文件不存在或为空"
-            exit 1
-          fi
-
-          echo "找到 Release APK：$UNSIGNED_APK"
-
-          echo "UNSIGNED_APK=$UNSIGNED_APK" >> "$GITHUB_ENV"
-
-      # 8. 准备正式签名文件
-      - name: Prepare signing keystore
-        shell: bash
-        env:
-          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-        run: |
-          set -e
-
-          if [ -z "$KEYSTORE_BASE64" ] || [ -z "$KEYSTORE_PASSWORD" ]; then
-            echo "错误：缺少签名配置 Secrets"
-            exit 1
-          fi
-
-          echo "$KEYSTORE_BASE64" | base64 --decode \
-            > "$RUNNER_TEMP/release.jks"
-
-          if [ ! -s "$RUNNER_TEMP/release.jks" ]; then
-            echo "错误：签名文件生成失败"
-            exit 1
-          fi
-
-          keytool -list \
-            -keystore "$RUNNER_TEMP/release.jks" \
-            -storepass "$KEYSTORE_PASSWORD"
-
-          echo "KEYSTORE_PATH=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
-
-          echo "签名文件准备完成"
-
-      # 9. APK 对齐并正式签名
-      - name: Sign Release APK
-        shell: bash
-        env:
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-        run: |
-          set -e
-
-          BUILD_TOOLS="$ANDROID_HOME/build-tools/35.0.0"
-          ZIPALIGN="$BUILD_TOOLS/zipalign"
-          APKSIGNER="$BUILD_TOOLS/apksigner"
-
-          if [ -z "$KEY_ALIAS" ] || [ -z "$KEY_PASSWORD" ]; then
-            echo "错误：签名 Secrets 不完整"
-            exit 1
-          fi
-
-          if [ ! -f "$UNSIGNED_APK" ]; then
-            echo "错误：找不到待签名 APK"
-            exit 1
-          fi
-
-          ALIGNED_APK="$RUNNER_TEMP/app-release-aligned.apk"
-          SIGNED_APK="$RUNNER_TEMP/app-release.apk"
-
-          echo "=== APK 对齐 ==="
-
-          "$ZIPALIGN" -f -v 4 \
-            "$UNSIGNED_APK" \
-            "$ALIGNED_APK"
-
-          echo "=== APK 正式签名 ==="
-
-          "$APKSIGNER" sign \
-            --ks "$KEYSTORE_PATH" \
-            --ks-key-alias "$KEY_ALIAS" \
-            --ks-pass env:KEYSTORE_PASSWORD \
-            --key-pass env:KEY_PASSWORD \
-            --out "$SIGNED_APK" \
-            "$ALIGNED_APK"
-
-          echo "=== 验证 APK 签名 ==="
-
-          "$APKSIGNER" verify \
-            --verbose \
-            --print-certs \
-            "$SIGNED_APK"
-
-          if [ ! -s "$SIGNED_APK" ]; then
-            echo "错误：签名 APK 不存在或文件为空"
-            exit 1
-          fi
-
-          echo "SIGNED_APK=$SIGNED_APK" >> "$GITHUB_ENV"
-
-          echo "================================"
-          echo "Release APK 正式签名成功"
-          echo "================================"
-
-      # 10. 上传最终签名 APK
-      - name: Upload Signed APK
+      # ===== 修改：产物路径改成 release 目录 =====
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: RedFingerGameBot-APK
-          path: ${{ runner.temp }}/app-release.apk
+          path: extracted/**/app/build/outputs/apk/release/*.apk
           if-no-files-found: error
-          retention-days: 30
