@@ -1,63 +1,76 @@
-#!/data/data/com.termux/files/usr/bin/bash
 
-# RedFingerGameBot 一键推送脚本
+#!/system/bin/sh
+
+# RedFingerGameBot 自动更新及 GitHub 推送
 
 PROJECT_DIR="/storage/emulated/0/RedFingerGameBot_V0_9_3"
+DOWNLOAD_DIR="/storage/emulated/0/Download"
 BRANCH="main"
+
+TERMUX_HOME="/data/data/com.termux/files/home"
+TERMUX_BIN="/data/data/com.termux/files/usr/bin"
+
+export HOME="$TERMUX_HOME"
+export PATH="$TERMUX_BIN:/system/bin:/system/xbin:$PATH"
+
+echo "================================"
+echo " RedFingerGameBot 一键更新推送"
+echo "================================"
+
+# 定位 Git
+if command -v git >/dev/null 2>&1; then
+    GIT="$(command -v git)"
+elif [ -x "$TERMUX_BIN/git" ]; then
+    GIT="$TERMUX_BIN/git"
+else
+    echo "[错误] 找不到 Git"
+    exit 1
+fi
 
 cd "$PROJECT_DIR" || exit 1
 
-echo "================================"
-echo " RedFingerGameBot 一键推送工具"
-echo "================================"
-
-# 检查 Git 仓库
-if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    echo "[错误] 当前目录不是 Git 仓库"
+# 检查仓库
+if ! "$GIT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    echo "[错误] 项目不是 Git 仓库"
     exit 1
 fi
 
-# 检查远程仓库
-if ! git remote get-url origin >/dev/null 2>&1; then
-    echo "[错误] 未配置 GitHub 远程仓库"
+# 查找 Download 最新 ZIP
+echo "[1/5] 查找最新下载的 ZIP..."
+
+LATEST_ZIP=$(ls -t "$DOWNLOAD_DIR"/*.zip 2>/dev/null | head -n 1)
+
+if [ -z "$LATEST_ZIP" ] || [ ! -f "$LATEST_ZIP" ]; then
+    echo "[错误] Download 中没有 ZIP 文件"
     exit 1
 fi
 
-# 切换到 main 分支
-git checkout "$BRANCH" || exit 1
+echo "找到文件：$(basename "$LATEST_ZIP")"
 
-# 添加全部修改
-echo "[1/4] 正在添加文件..."
-git add -A || exit 1
+# 先同步远程
+echo "[2/5] 同步 GitHub..."
+"$GIT" pull --rebase origin "$BRANCH" || exit 1
 
-# 检查是否有修改
-if git diff --cached --quiet; then
-    echo "[提示] 没有新的修改需要提交"
+# 自动复制并命名
+echo "[3/5] 更新 source.zip..."
+cp -f "$LATEST_ZIP" "$PROJECT_DIR/source.zip" || exit 1
+
+# 添加并提交
+echo "[4/5] 提交修改..."
+"$GIT" add -A || exit 1
+
+if ! "$GIT" diff --cached --quiet; then
+    "$GIT" commit -m "Update source.zip: $(date '+%Y-%m-%d %H:%M:%S')" || exit 1
 else
-    # 自动生成提交信息
-    COMMIT_MSG="Auto update: $(date '+%Y-%m-%d %H:%M:%S')"
-
-    echo "[2/4] 正在提交..."
-    git commit -m "$COMMIT_MSG" || exit 1
+    echo "没有新的修改需要提交"
 fi
-
-# 同步远程更新
-echo "[3/4] 正在同步 GitHub..."
-git pull --rebase origin "$BRANCH" || {
-    echo ""
-    echo "[错误] 同步失败，可能存在文件冲突"
-    echo "请先解决冲突，再运行 ./push.sh"
-    exit 1
-}
 
 # 推送
-echo "[4/4] 正在推送 GitHub..."
-git push origin "$BRANCH" || {
-    echo "[错误] 推送失败，请检查网络或 GitHub 登录状态"
-    exit 1
-}
+echo "[5/5] 推送 GitHub..."
+"$GIT" push origin "$BRANCH" || exit 1
 
-echo ""
 echo "================================"
-echo "       推送成功！"
+echo "          推送成功！"
 echo "================================"
+echo "上传文件：source.zip"
+echo "原始文件：$(basename "$LATEST_ZIP")"
