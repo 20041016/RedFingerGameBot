@@ -1,63 +1,64 @@
-#!/data/data/com.termux/files/usr/bin/bash
 
-# RedFingerGameBot 一键推送脚本
+#!/system/bin/sh
 
-PROJECT_DIR="/storage/emulated/0/RedFingerGameBot_V0_9_3"
-BRANCH="main"
+# RedFingerGameBot - MT管理器一键推送
+
+PROJECT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+TERMUX_HOME="/data/data/com.termux/files/home"
+TERMUX_BIN="/data/data/com.termux/files/usr/bin"
+
+echo "================================"
+echo " RedFingerGameBot GitHub Push"
+echo "================================"
+
+echo "[1] 项目目录：$PROJECT_DIR"
+
+if [ ! -e "$PROJECT_DIR/.git" ]; then
+    echo "[错误] 当前脚本所在目录没有 .git"
+    echo "请把 push.sh 放在项目根目录，与 .git 同级。"
+    exit 1
+fi
+
+# 查找 Git
+if command -v git >/dev/null 2>&1; then
+    GIT="$(command -v git)"
+elif [ -x "$TERMUX_BIN/git" ]; then
+    GIT="$TERMUX_BIN/git"
+else
+    echo "[错误] 当前执行环境找不到 Git"
+    echo "MT管理器无法直接使用 Termux 的 Git。"
+    exit 1
+fi
+
+export HOME="$TERMUX_HOME"
+export PATH="$TERMUX_BIN:/system/bin:/system/xbin:$PATH"
 
 cd "$PROJECT_DIR" || exit 1
 
-echo "================================"
-echo " RedFingerGameBot 一键推送工具"
-echo "================================"
+echo "[2] 检查 Git 仓库..."
+"$GIT" rev-parse --show-toplevel || exit 1
 
-# 检查 Git 仓库
-if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    echo "[错误] 当前目录不是 Git 仓库"
-    exit 1
-fi
+echo "[3] 添加修改..."
+"$GIT" add -A || exit 1
 
-# 检查远程仓库
-if ! git remote get-url origin >/dev/null 2>&1; then
-    echo "[错误] 未配置 GitHub 远程仓库"
-    exit 1
-fi
-
-# 切换到 main 分支
-git checkout "$BRANCH" || exit 1
-
-# 添加全部修改
-echo "[1/4] 正在添加文件..."
-git add -A || exit 1
-
-# 检查是否有修改
-if git diff --cached --quiet; then
-    echo "[提示] 没有新的修改需要提交"
+if ! "$GIT" diff --cached --quiet; then
+    "$GIT" commit -m "Auto update: $(date '+%Y-%m-%d %H:%M:%S')" || exit 1
 else
-    # 自动生成提交信息
-    COMMIT_MSG="Auto update: $(date '+%Y-%m-%d %H:%M:%S')"
-
-    echo "[2/4] 正在提交..."
-    git commit -m "$COMMIT_MSG" || exit 1
+    echo "没有新的修改。"
 fi
 
-# 同步远程更新
-echo "[3/4] 正在同步 GitHub..."
-git pull --rebase origin "$BRANCH" || {
-    echo ""
-    echo "[错误] 同步失败，可能存在文件冲突"
-    echo "请先解决冲突，再运行 ./push.sh"
+echo "[4] 同步远程仓库..."
+"$GIT" pull --rebase origin main || {
+    echo "[错误] 同步失败，请检查冲突或网络。"
     exit 1
 }
 
-# 推送
-echo "[4/4] 正在推送 GitHub..."
-git push origin "$BRANCH" || {
-    echo "[错误] 推送失败，请检查网络或 GitHub 登录状态"
+echo "[5] 推送 GitHub..."
+"$GIT" push origin main || {
+    echo "[错误] 推送失败。"
     exit 1
 }
 
-echo ""
 echo "================================"
-echo "       推送成功！"
+echo "         推送成功！"
 echo "================================"
