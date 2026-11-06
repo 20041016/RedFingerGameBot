@@ -1,4 +1,8 @@
-
+echo "=== 当前运行环境 ==="
+echo "PATH=$PATH"
+echo "PREFIX=$PREFIX"
+echo "curl路径：$(command -v curl)"
+curl --version
 #!/system/bin/sh
 
 PROJECT_DIR="/storage/emulated/0/RedFingerGameBot_V0_9_3"
