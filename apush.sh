@@ -33,28 +33,22 @@ EXTRACT_DIR="$TEMP_DIR/extracted"
 # 最终 APK
 DEST="$OUTPUT_DIR/RedFingerGameBot.apk"
 
-# 构建模式
-DOWNLOAD_MODE=""
-
 echo "======================================"
 echo " RedFingerGameBot Release 自动构建下载"
 echo "======================================"
 
 # ==========================================
-# 临时文件清理
+# 临时文件清理函数
 # ==========================================
 
 cleanup() {
-    echo ""
     echo "[清理] 正在删除临时下载文件..."
     rm -rf "$TEMP_DIR"
     echo "[清理] 临时文件清理完成"
 }
 
-trap cleanup EXIT
-trap 'exit 129' HUP
-trap 'exit 130' INT
-trap 'exit 143' TERM
+# 异常退出时也尝试清理
+trap cleanup EXIT HUP INT TERM
 
 # ==========================================
 # 1. 检查工具
@@ -62,7 +56,7 @@ trap 'exit 143' TERM
 
 echo "[检查] 正在检查运行环境..."
 
-for cmd in git jq unzip sha256sum grep sed head awk date sleep; do
+for cmd in git jq unzip; do
     if ! command -v "$cmd" >/dev/null 2>&1; then
         echo "[错误] 缺少工具：$cmd"
         exit 1
@@ -126,7 +120,7 @@ fi
 API="https://api.github.com/repos/$REPO"
 
 # ==========================================
-# 4. 查找 Download 中最新 ZIP
+# 4. 查找源码 ZIP
 # ==========================================
 
 echo "[2/7] 查找源码 ZIP..."
@@ -138,17 +132,8 @@ if [ -z "$LATEST_ZIP" ] || [ ! -f "$LATEST_ZIP" ]; then
     exit 1
 fi
 
-echo "======================================"
-echo "选中的源码压缩包："
-echo "$LATEST_ZIP"
-echo "文件大小：$(du -h "$LATEST_ZIP" | awk '{print $1}')"
+echo "源码：$(basename "$LATEST_ZIP")"
 
-NEW_SHA=$(sha256sum "$LATEST_ZIP" | awk '{print $1}')
-
-echo "SHA256：$NEW_SHA"
-echo "======================================"
-
-# 检查 ZIP 完整性
 if ! unzip -t "$LATEST_ZIP" >/dev/null 2>&1; then
     echo "[错误] ZIP 文件损坏"
     exit 1
@@ -179,41 +164,30 @@ unset ZIP_LIST
 echo "[成功] 源码 ZIP 检查通过"
 
 # ==========================================
-# 5. 同步 GitHub 并比较源码
+# 5. 判断源码是否更新
 # ==========================================
 
-echo "[3/7] 同步 GitHub 并检查源码变化..."
+echo "[3/7] 检查 source.zip 是否更新..."
 
-# 先保存项目中的其他本地修改
 "$GIT" add -A || exit 1
 
 if ! "$GIT" diff --cached --quiet; then
     "$GIT" commit -m "Save local changes before update" || exit 1
 fi
 
-echo "[同步] 正在同步 GitHub..."
+echo "同步 GitHub..."
 
 "$GIT" pull --rebase origin "$BRANCH" || {
     echo "[错误] 同步失败，可能存在冲突"
     exit 1
 }
 
-# 获取 GitHub 当前 source.zip 的内容哈希
-if [ -f "$PROJECT_DIR/source.zip" ]; then
-    OLD_SHA=$(sha256sum "$PROJECT_DIR/source.zip" | awk '{print $1}')
-else
-    OLD_SHA=""
-fi
+cp -f "$LATEST_ZIP" "$PROJECT_DIR/source.zip" || exit 1
 
-echo "======================================"
-echo "新 ZIP SHA256：$NEW_SHA"
-echo "旧 ZIP SHA256：$OLD_SHA"
-echo "======================================"
-
-if [ "$NEW_SHA" = "$OLD_SHA" ] && [ -n "$OLD_SHA" ]; then
+if "$GIT" diff --quiet -- source.zip; then
 
     echo "======================================"
-    echo "[提示] source.zip 内容没有变化"
+    echo "[提示] source.zip 没有更新"
     echo "[模式] 下载最近一次成功构建的 APK"
     echo "======================================"
 
@@ -222,15 +196,9 @@ if [ "$NEW_SHA" = "$OLD_SHA" ] && [ -n "$OLD_SHA" ]; then
 else
 
     echo "======================================"
-    echo "[提示] 检测到新的源码压缩包"
+    echo "[提示] 检测到 source.zip 更新"
     echo "[模式] 推送源码并构建新的 APK"
     echo "======================================"
-
-    # 复制新的源码包并统一命名为 source.zip
-    cp -f "$LATEST_ZIP" "$PROJECT_DIR/source.zip" || {
-        echo "[错误] 复制 source.zip 失败"
-        exit 1
-    }
 
     "$GIT" add source.zip || exit 1
 
@@ -365,7 +333,7 @@ else
 fi
 
 # ==========================================
-# 9. 如果源码没有更新，查找最近成功构建
+# 9. 如果源码没有更新，查找最新成功构建
 # ==========================================
 
 if [ "$DOWNLOAD_MODE" = "latest" ]; then
@@ -375,7 +343,7 @@ if [ "$DOWNLOAD_MODE" = "latest" ]; then
     RUNS=$("$CURL" -fsS \
         -H "Authorization: Bearer $TOKEN" \
         -H "Accept: application/vnd.github+json" \
-        "$API/actions/runs?branch=$BRANCH&per_page=100") || {
+        "$API/actions/runs?branch=$BRANCH&status=success&per_page=100") || {
             echo "[错误] 查询历史构建失败"
             exit 1
         }
@@ -404,10 +372,10 @@ if [ "$DOWNLOAD_MODE" = "latest" ]; then
 fi
 
 # ==========================================
-# 10. 获取 Artifact
+# 10. 下载 Artifact
 # ==========================================
 
-echo "[6/7] 获取构建产物..."
+echo "[6/7] 下载构建产物..."
 
 ARTIFACTS=$("$CURL" -fsS \
     -H "Authorization: Bearer $TOKEN" \
@@ -438,6 +406,7 @@ fi
 
 echo "[7/7] 下载并解压 Release APK..."
 
+# 清理之前可能残留的临时目录
 rm -rf "$TEMP_DIR"
 mkdir -p "$EXTRACT_DIR" || exit 1
 
@@ -468,6 +437,7 @@ unzip -o "$ARTIFACT_ZIP" \
         exit 1
     }
 
+# 查找 APK
 APK=$(find "$EXTRACT_DIR" \
     -type f -name "app-release.apk" -print -quit)
 
@@ -480,7 +450,7 @@ fi
 # 12. 安全复制 APK
 # ==========================================
 
-echo "[复制] 正在复制 APK 到目标目录..."
+echo "[复制] 正在安装包到目标目录..."
 
 NEW_APK="$OUTPUT_DIR/RedFingerGameBot.new.apk"
 
@@ -497,6 +467,7 @@ if [ ! -s "$NEW_APK" ]; then
     exit 1
 fi
 
+# 新文件复制成功后再替换旧文件
 mv -f "$NEW_APK" "$DEST" || {
     echo "[错误] 替换最终 APK 失败"
     rm -f "$NEW_APK"
@@ -513,11 +484,14 @@ fi
 # ==========================================
 
 echo "[清理] 删除 Artifact 压缩包..."
+
 rm -f "$ARTIFACT_ZIP"
 
 echo "[清理] 删除临时解压目录..."
+
 rm -rf "$EXTRACT_DIR"
 
+# 删除空临时目录
 rmdir "$TEMP_DIR" 2>/dev/null || true
 
 echo "[成功] 临时文件已清理"
