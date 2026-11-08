@@ -3,6 +3,7 @@
 # ==========================================
 # RedFingerGameBot 自动推送及 APK 下载
 # MT 管理器专用 Release 正式签名版
+# 方案：源码 SHA 比对触发构建 + Artifact 多线程下载
 # ==========================================
 
 PROJECT_DIR="/storage/emulated/0/RedFingerGameBot_V0_9_3"
@@ -17,7 +18,7 @@ WORKFLOW_NAME="Build RedFinger GameBot APK"
 TERMUX_HOME="/data/data/com.termux/files/home"
 TERMUX_BIN="/data/data/com.termux/files/usr/bin"
 
-# 强制优先使用 MT 管理器自带 curl
+# 优先 MT 管理器 curl，fallback Termux curl
 CURL="/data/user/0/bin.mt.plus/files/term/bin/curl"
 
 export HOME="$TERMUX_HOME"
@@ -32,6 +33,9 @@ RUNS_FILE="$TEMP_DIR/runs.json"
 
 # 最终 APK
 DEST="$OUTPUT_DIR/RedFingerGameBot.apk"
+
+# curl 通用选项（API 查询用，短超时）
+CURL_API_OPTS="--connect-timeout 10 --max-time 60 --retry 2 --retry-delay 2"
 
 # 状态变量
 DOWNLOAD_MODE=""
@@ -84,6 +88,15 @@ fi
 if [ -z "$CURL" ] || [ ! -x "$CURL" ] || ! "$CURL" --version >/dev/null 2>&1; then
     echo "[错误] 找不到可用的 curl（MT 管理器或 Termux）"
     exit 1
+fi
+
+# aria2 可选，有就用
+if command -v aria2c >/dev/null 2>&1; then
+    HAVE_ARIA2=1
+    echo "[成功] aria2c：$(command -v aria2c)（多线程下载）"
+else
+    HAVE_ARIA2=0
+    echo "[提示] 未安装 aria2c，将使用 curl 单线程（pkg install aria2 可提速）"
 fi
 
 # unzip 必须支持 -Z（zipinfo）
@@ -202,7 +215,6 @@ echo "[成功] 源码 ZIP 检查通过"
 
 echo "[3/7] 同步 GitHub 并检查源码变化..."
 
-# 先保存项目中的其他本地修改
 "$GIT" add -A || exit 1
 
 if ! "$GIT" diff --cached --quiet; then
@@ -219,7 +231,6 @@ if ! "$GIT" pull --rebase origin "$BRANCH"; then
     exit 1
 fi
 
-# 获取 GitHub 当前 source.zip 的内容哈希
 if [ -f "$PROJECT_DIR/source.zip" ]; then
     OLD_SHA=$(sha256sum "$PROJECT_DIR/source.zip" | awk '{print $1}')
 else
@@ -247,7 +258,6 @@ else
     echo "[模式] 推送源码并构建新的 APK"
     echo "======================================"
 
-    # 复制新的源码包并统一命名为 source.zip
     cp -f "$LATEST_ZIP" "$PROJECT_DIR/source.zip" || {
         echo "[错误] 复制 source.zip 失败"
         exit 1
@@ -288,7 +298,7 @@ else
 
         while [ "$COUNT" -lt 160 ]; do
 
-            RESPONSE=$("$CURL" -fsS \
+            RESPONSE=$("$CURL" $CURL_API_OPTS -fsS \
                 -H "Authorization: Bearer $TOKEN" \
                 -H "Accept: application/vnd.github+json" \
                 "$API/actions/runs?head_sha=$COMMIT_SHA&event=push&per_page=20") || {
@@ -332,9 +342,9 @@ else
 
         COUNT=0
 
-        while [ "$COUNT" -lt 160 ]; do
+        while [ "$COUNT" -lt 240 ]; do
 
-            RUN_INFO=$("$CURL" -fsS \
+            RUN_INFO=$("$CURL" $CURL_API_OPTS -fsS \
                 -H "Authorization: Bearer $TOKEN" \
                 -H "Accept: application/vnd.github+json" \
                 "$API/actions/runs/$RUN_ID") || {
@@ -357,7 +367,7 @@ else
                     echo "[错误] GitHub Actions 构建失败：$CONCLUSION"
                     echo "======================================"
 
-                    JOBS=$("$CURL" -fsS \
+                    JOBS=$("$CURL" $CURL_API_OPTS -fsS \
                         -H "Authorization: Bearer $TOKEN" \
                         -H "Accept: application/vnd.github+json" \
                         "$API/actions/runs/$RUN_ID/jobs?per_page=100")
@@ -383,7 +393,7 @@ else
             sleep 15
         done
 
-        if [ "$COUNT" -ge 160 ]; then
+        if [ "$COUNT" -ge 240 ]; then
             echo "[错误] 构建等待超时"
             exit 1
         fi
@@ -399,7 +409,7 @@ if [ "$DOWNLOAD_MODE" = "latest" ]; then
     echo "[4/7] 查询最近一次成功构建..."
 
     # 写入临时文件，避免 ARG_MAX（Argument list too long）
-    if ! "$CURL" -fsS \
+    if ! "$CURL" $CURL_API_OPTS -fsS \
         -H "Authorization: Bearer $TOKEN" \
         -H "Accept: application/vnd.github+json" \
         "$API/actions/runs?branch=$BRANCH&per_page=30" \
@@ -436,12 +446,12 @@ if [ "$DOWNLOAD_MODE" = "latest" ]; then
 fi
 
 # ==========================================
-# 10. 获取 Artifact
+# 10. 获取 Artifact 列表
 # ==========================================
 
-echo "[6/7] 获取构建产物..."
+echo "[5/7] 获取构建产物列表..."
 
-ARTIFACTS=$("$CURL" -fsS \
+ARTIFACTS=$("$CURL" $CURL_API_OPTS -fsS \
     -H "Authorization: Bearer $TOKEN" \
     -H "Accept: application/vnd.github+json" \
     "$API/actions/runs/$RUN_ID/artifacts") || {
@@ -467,23 +477,91 @@ fi
 
 unset ARTIFACTS
 
+echo "Artifact ID：$ARTIFACT_ID"
+
 # ==========================================
-# 11. 下载并解压
+# 11. 下载 Artifact（aria2 多线程 + 镜像轮询）
 # ==========================================
 
-echo "[7/7] 下载并解压 Release APK..."
+echo "[6/7] 下载 Artifact..."
 
-rm -rf "$EXTRACT_DIR"
-mkdir -p "$EXTRACT_DIR" || exit 1
+ARTIFACT_URL="$API/actions/artifacts/$ARTIFACT_ID/zip"
 
-"$CURL" -fL \
+# 先拿 302 的真实下载地址（objects.githubusercontent.com，带签名）
+REAL_URL=$("$CURL" -fsS -o /dev/null -w '%{redirect_url}' \
+    --connect-timeout 10 --max-time 30 \
     -H "Authorization: Bearer $TOKEN" \
     -H "Accept: application/vnd.github+json" \
-    "$API/actions/artifacts/$ARTIFACT_ID/zip" \
-    -o "$ARTIFACT_ZIP" || {
-        echo "[错误] 下载 Artifact 失败"
-        exit 1
-    }
+    "$ARTIFACT_URL" 2>/dev/null)
+
+if [ -z "$REAL_URL" ]; then
+    echo "[警告] 未拿到 302 地址，回退官方 curl 下载"
+    rm -f "$ARTIFACT_ZIP"
+    "$CURL" -fL --connect-timeout 10 --max-time 600 \
+        -H "Authorization: Bearer $TOKEN" \
+        -H "Accept: application/vnd.github+json" \
+        "$ARTIFACT_URL" -o "$ARTIFACT_ZIP" || {
+            echo "[错误] 官方下载失败"
+            exit 1
+        }
+else
+    echo "真实地址：$REAL_URL"
+
+    # 候选：直连 + 镜像（空格分隔，URL 本身无空格）
+    CANDIDATES="
+$REAL_URL
+https://gh-proxy.com/$REAL_URL
+https://ghfast.top/$REAL_URL
+https://ghproxy.net/$REAL_URL
+"
+
+    DL_START=$(date +%s)
+    DL_OK=0
+
+    for url in $CANDIDATES; do
+        [ -n "$url" ] || continue
+        echo "[下载] 尝试：$url"
+
+        rm -f "$ARTIFACT_ZIP"
+
+        if [ "$HAVE_ARIA2" -eq 1 ]; then
+            aria2c -x 8 -s 8 -k 1M \
+                --connect-timeout=10 --timeout=30 \
+                --max-tries=2 --retry-wait=2 \
+                --allow-overwrite=true \
+                --console-log-level=warn \
+                -d "$TEMP_DIR" -o "$(basename "$ARTIFACT_ZIP")" \
+                "$url" >/dev/null 2>&1
+        else
+            "$CURL" -fL --connect-timeout 10 --max-time 300 \
+                "$url" -o "$ARTIFACT_ZIP" >/dev/null 2>&1
+        fi
+
+        # 校验：非空 + zip 结构完整（防镜像返回 HTML 错误页）
+        if [ -s "$ARTIFACT_ZIP" ] && unzip -t "$ARTIFACT_ZIP" >/dev/null 2>&1; then
+            echo "[下载] 成功"
+            DL_OK=1
+            break
+        else
+            echo "[下载] 失败，换下一个"
+        fi
+    done
+
+    if [ "$DL_OK" -ne 1 ]; then
+        echo "[警告] 所有下载源失败，回退官方 curl"
+        rm -f "$ARTIFACT_ZIP"
+        "$CURL" -fL --connect-timeout 10 --max-time 600 \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "$ARTIFACT_URL" -o "$ARTIFACT_ZIP" || {
+                echo "[错误] 官方下载也失败"
+                exit 1
+            }
+    fi
+
+    DL_END=$(date +%s)
+    echo "[下载] 耗时：$((DL_END - DL_START)) 秒，大小：$(du -h "$ARTIFACT_ZIP" | awk '{print $1}')"
+fi
 
 unset TOKEN
 
@@ -497,13 +575,22 @@ if ! unzip -t "$ARTIFACT_ZIP" >/dev/null 2>&1; then
     exit 1
 fi
 
+# ==========================================
+# 12. 解压并查找 APK
+# ==========================================
+
+echo "[7/7] 解压 APK..."
+
+rm -rf "$EXTRACT_DIR"
+mkdir -p "$EXTRACT_DIR" || exit 1
+
 unzip -o "$ARTIFACT_ZIP" \
     -d "$EXTRACT_DIR" >/dev/null || {
         echo "[错误] Artifact 解压失败"
         exit 1
     }
 
-# 查找 APK（宽松匹配，排除 unsigned）
+# 宽松查找 APK，排除 unsigned
 APK=$(find "$EXTRACT_DIR" \
     -type f -name "*.apk" ! -name "*unsigned*" -print -quit)
 
@@ -517,7 +604,7 @@ fi
 echo "[成功] 找到 APK：$(basename "$APK")"
 
 # ==========================================
-# 12. 安全复制 APK
+# 13. 安全复制 APK
 # ==========================================
 
 echo "[复制] 正在复制 APK 到目标目录..."
@@ -549,7 +636,7 @@ if [ ! -s "$DEST" ]; then
 fi
 
 # ==========================================
-# 13. 清理临时文件
+# 14. 清理临时文件
 # ==========================================
 
 echo "[清理] 删除 Artifact 压缩包..."
@@ -563,7 +650,7 @@ rmdir "$TEMP_DIR" 2>/dev/null || true
 echo "[成功] 临时文件已清理"
 
 # ==========================================
-# 14. 完成
+# 15. 完成
 # ==========================================
 
 echo "======================================"
@@ -577,7 +664,10 @@ else
 fi
 
 echo "APK 位置：$DEST"
-echo "构建编号：$RUN_ID"
+
+if [ -n "$RUN_ID" ]; then
+    echo "构建编号：$RUN_ID"
+fi
 
 if [ -n "$COMMIT_SHA" ]; then
     echo "提交 SHA：$COMMIT_SHA"
