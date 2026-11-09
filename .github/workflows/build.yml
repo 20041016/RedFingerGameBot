@@ -5,6 +5,10 @@ on:
   push:
     paths:
       - 'source.zip'
+      - 'app/**'
+      - 'build.gradle'
+      - 'settings.gradle'
+      - 'gradle.properties'
       - '.github/workflows/build.yml'
 
 jobs:
@@ -14,13 +18,24 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Extract source
+      # 仓库根目录已经是完整源码时直接用它；否则退回解压 source.zip（兼容旧流程）。
+      - name: Detect project dir
         run: |
-          mkdir extracted
-          unzip source.zip -d extracted
-          PROJECT_DIR=$(find extracted -name settings.gradle -o -name settings.gradle.kts | head -n 1 | xargs dirname)
-          echo "PROJECT_DIR=$PROJECT_DIR" >> $GITHUB_ENV
+          if [ -f settings.gradle ] || [ -f settings.gradle.kts ]; then
+            echo "PROJECT_DIR=." >> "$GITHUB_ENV"
+            echo "使用仓库内的源码目录"
+          else
+            mkdir -p extracted
+            unzip -o source.zip -d extracted
+            PROJECT_DIR=$(find extracted -name settings.gradle -o -name settings.gradle.kts | head -n 1 | xargs dirname)
+            echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+            echo "使用 source.zip 内的源码"
+          fi
+
+      - name: Verify project dir
+        run: |
           test -n "$PROJECT_DIR"
+          ls -la "$PROJECT_DIR"
 
       - name: Setup Java
         uses: actions/setup-java@v4
@@ -43,25 +58,23 @@ jobs:
           yes | sdkmanager --licenses || true
           sdkmanager "platforms;android-35" "build-tools;35.0.0"
 
-      # ===== 新增：把 Secrets 里的 Base64 还原成 .jks 文件 =====
+      # 把 Secrets 里的 Base64 还原成 .jks 文件
       - name: Decode Keystore
         run: |
-          echo "${{ secrets.KEYSTORE_BASE64 }}" | tr -d '\n\r ' | base64 --decode > $RUNNER_TEMP/my-release-key.jks
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | tr -d '\n\r ' | base64 --decode > "$RUNNER_TEMP/my-release-key.jks"
 
-      # ===== 修改：assembleDebug → assembleRelease，并注入签名参数 =====
       - name: Build Signed Release APK
         run: |
           cd "$PROJECT_DIR"
           gradle --no-daemon :app:assembleRelease \
-            -Pandroid.injected.signing.store.file=$RUNNER_TEMP/my-release-key.jks \
+            -Pandroid.injected.signing.store.file="$RUNNER_TEMP/my-release-key.jks" \
             -Pandroid.injected.signing.store.password="${{ secrets.KEYSTORE_PASSWORD }}" \
             -Pandroid.injected.signing.key.alias="${{ secrets.KEY_ALIAS }}" \
             -Pandroid.injected.signing.key.password="${{ secrets.KEY_PASSWORD }}"
 
-      # ===== 修改：产物路径改成 release 目录 =====
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: RedFingerGameBot-APK
-          path: extracted/**/app/build/outputs/apk/release/*.apk
+          path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/release/*.apk
           if-no-files-found: error

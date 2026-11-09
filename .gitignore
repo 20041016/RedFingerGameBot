@@ -1,0 +1,25 @@
+# Gradle / Android
+.gradle/
+build/
+app/build/
+captures/
+.externalNativeBuild/
+.cxx/
+
+# 本机 SDK 路径，不能提交
+local.properties
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# 签名文件
+*.jks
+*.keystore
+*.p12
