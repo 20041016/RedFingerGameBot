@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="accessibility_verification_description">读取验证诊断页面可见文字并点击指定诊断控件</string>
+</resources>

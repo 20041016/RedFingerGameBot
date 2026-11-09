@@ -1,0 +1,44 @@
+plugins {
+    id 'com.android.application'
+    id 'com.chaquo.python'
+}
+
+android {
+    namespace 'com.redfinger.gamebot'
+    compileSdk 35
+
+    // Resolve duplicate metadata shipped by android-mail and android-activation.
+    packaging {
+        resources {
+            excludes += ['META-INF/NOTICE.md', 'META-INF/LICENSE.md']
+        }
+    }
+
+    defaultConfig {
+        applicationId 'com.redfinger.gamebot'
+        minSdk 24
+        targetSdk 33
+        versionCode 14
+        versionName '1.1.0'
+        ndk {
+            abiFilters 'arm64-v8a', 'armeabi-v7a'
+        }
+        python {
+            version '3.11'
+            pip {
+                // 引擎仅使用 Python 标准库，不需要额外 pip 包。
+            }
+        }
+    }
+}
+
+dependencies {
+    implementation 'androidx.appcompat:appcompat:1.7.1'
+    implementation 'com.google.android.material:material:1.13.0'
+    implementation 'com.google.mlkit:text-recognition-chinese:16.0.1'
+    implementation 'androidx.core:core:1.16.0'
+    implementation 'com.sun.mail:android-mail:1.6.7'
+    implementation 'com.sun.mail:android-activation:1.6.7'
+    // Official OpenCV Android AAR from Maven Central (native arm64-v8a + armeabi-v7a).
+    implementation 'org.opencv:opencv:4.10.0'
+}
