@@ -2,9 +2,6 @@ package com.redfinger.gamebot;
 
 import android.app.Activity;
 import android.content.Intent;
-import android.graphics.Color;
-import android.graphics.Typeface;
-import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -18,16 +15,15 @@ import android.widget.TextView;
 
 public class MainActivity extends Activity {
     private static final int REQ_OVERLAY = 701;
-    private static final int BG = Color.rgb(246, 248, 251);
-    private static final int INK = Color.rgb(28, 38, 52);
-    private static final int MUTED = Color.rgb(112, 125, 142);
     private LinearLayout root;
-    private TextView permissionStatus;
+    private TextView overlayValue;
+    private View overlayDot;
+    private Button permissionButton;
 
     @Override protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        getWindow().setStatusBarColor(BG);
-        getWindow().setNavigationBarColor(BG);
+        getWindow().setStatusBarColor(Ui.BG);
+        getWindow().setNavigationBarColor(Ui.BG);
         getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
                 | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
         buildHome();
@@ -69,79 +65,86 @@ public class MainActivity extends Activity {
 
     @Override protected void onResume() {
         super.onResume();
-        if (permissionStatus != null) updatePermissionStatus();
+        if (overlayValue != null) updatePermissionStatus();
     }
 
     private void buildHome() {
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
+        scroll.setVerticalScrollBarEnabled(false);
+        scroll.setBackgroundColor(Ui.BG);
         root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(22), dp(28), dp(22), dp(28));
-        root.setBackgroundColor(BG);
+        root.setPadding(dp(24), dp(44), dp(24), dp(32));
+        root.setBackgroundColor(Ui.BG);
         scroll.addView(root);
 
-        TextView eyebrow = text("REDFINGER  /  AUTOMATION", 11, MUTED, true);
-        root.addView(eyebrow);
-        TextView title = text("自动化助手", 29, INK, true);
-        LinearLayout.LayoutParams titleLp = lp(-2, -2); titleLp.topMargin = dp(7);
-        root.addView(title, titleLp);
-        TextView subtitle = text("选择一个功能，开始你的自动化任务。", 14, MUTED, false);
-        LinearLayout.LayoutParams subLp = lp(-2, -2); subLp.topMargin = dp(5);
-        root.addView(subtitle, subLp);
+        // ── Header ──────────────────────────────────────────────
+        root.addView(Ui.label(this, "REDFINGER  ·  AUTOMATION", Ui.MUTED));
+        root.addView(Ui.text(this, "自动化助手", 32, Ui.INK, true), Ui.lp(-2, -2, dp(10)));
+        root.addView(Ui.text(this, "选择一个功能，开始你的自动化任务。", 14, Ui.SUBTLE, false),
+                Ui.lp(-2, -2, dp(6)));
 
-        LinearLayout status = card();
-        LinearLayout.LayoutParams statusLp = lp(-1, -2); statusLp.topMargin = dp(24);
-        root.addView(status, statusLp);
-        TextView statusTitle = text("运行环境", 16, INK, true);
-        status.addView(statusTitle);
-        permissionStatus = text("正在检查权限…", 13, MUTED, false);
-        LinearLayout.LayoutParams p = lp(-1, -2); p.topMargin = dp(8);
-        status.addView(permissionStatus, p);
-        Button permission = button("检查 / 授予悬浮窗权限", false);
-        LinearLayout.LayoutParams permissionLp = lp(-1, dp(46)); permissionLp.topMargin = dp(13);
-        status.addView(permission, permissionLp);
-        permission.setOnClickListener(v -> requestOverlayPermission());
+        // ── Environment ─────────────────────────────────────────
+        root.addView(Ui.label(this, "运行环境", Ui.MUTED), Ui.lp(-2, -2, dp(40)));
+        LinearLayout env = Ui.card(this);
+        root.addView(env, Ui.lp(-1, -2, dp(12)));
 
-        TextView section = text("功能中心", 19, INK, true);
-        LinearLayout.LayoutParams sectionLp = lp(-2, -2); sectionLp.topMargin = dp(27);
-        root.addView(section, sectionLp);
-        root.addView(featureCard("01", "游戏挂机", "自动识别场景 · 战斗 · 寻敌", "复用现有 OCR 游戏引擎", "启动游戏挂机", BotService.MODE_GAME));
-        LinearLayout.LayoutParams musicLp = lp(-1, -2); musicLp.topMargin = dp(13);
-        root.addView(featureCard("02", "音游辅助", "六轨颜色识别 · Root 多点触控", "需要兼容 Type-B 触摸设备", "启动音游辅助", BotService.MODE_MUSIC), musicLp);
-        LinearLayout.LayoutParams albumLp = lp(-1, -2); albumLp.topMargin = dp(13);
-        root.addView(featureCard("03", "专辑补难度", "12 首 · 自动选难度 · 100% 判定", "复用六轨打歌模块 · 需先记录两个固定坐标", "启动专辑脚本", BotService.MODE_ALBUM), albumLp);
+        LinearLayout overlayRow = new LinearLayout(this);
+        overlayRow.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams nameLp = Ui.lp(0, -2); nameLp.weight = 1f;
+        overlayRow.addView(Ui.text(this, "悬浮窗权限", 14, Ui.INK, false), nameLp);
+        overlayDot = Ui.dot(this, Ui.MUTED);
+        LinearLayout.LayoutParams dotLp = Ui.lp(dp(7), dp(7)); dotLp.rightMargin = dp(8);
+        overlayRow.addView(overlayDot, dotLp);
+        overlayValue = Ui.text(this, "检查中", 14, Ui.SUBTLE, false);
+        overlayRow.addView(overlayValue);
+        env.addView(overlayRow);
 
-        TextView note = text("提示：三个功能不能同时运行。切换功能时会先停止当前任务并释放触点。音游多点触控需要按设备触摸驱动适配。", 12, MUTED, false);
-        LinearLayout.LayoutParams noteLp = lp(-1, -2); noteLp.topMargin = dp(18);
-        root.addView(note, noteLp);
-        Button emailSettings = button("邮箱提醒设置", false);
-        LinearLayout.LayoutParams emailLp = lp(-1, dp(48)); emailLp.topMargin = dp(16);
-        root.addView(emailSettings, emailLp);
+        env.addView(Ui.divider(this), Ui.lp(-1, Ui.hairline(this), dp(14)));
+
+        LinearLayout rootRow = new LinearLayout(this);
+        rootRow.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams rootNameLp = Ui.lp(0, -2); rootNameLp.weight = 1f;
+        rootRow.addView(Ui.text(this, "Root 权限", 14, Ui.INK, false), rootNameLp);
+        rootRow.addView(Ui.text(this, "启动功能时由 Root 管理器确认", 13, Ui.MUTED, false));
+        env.addView(rootRow, Ui.lp(-1, -2, dp(14)));
+
+        permissionButton = Ui.button(this, "授予悬浮窗权限", false);
+        env.addView(permissionButton, Ui.lp(-1, dp(46), dp(18)));
+        permissionButton.setOnClickListener(v -> requestOverlayPermission());
+
+        // ── Features ────────────────────────────────────────────
+        root.addView(Ui.label(this, "功能", Ui.MUTED), Ui.lp(-2, -2, dp(36)));
+        root.addView(featureCard("01", "游戏挂机", "自动识别场景 · 战斗 · 寻敌",
+                "复用现有 OCR 游戏引擎", "启动游戏挂机", BotService.MODE_GAME), Ui.lp(-1, -2, dp(12)));
+        root.addView(featureCard("02", "音游辅助", "六轨颜色识别 · Root 多点触控",
+                "需要兼容 Type-B 触摸设备", "启动音游辅助", BotService.MODE_MUSIC), Ui.lp(-1, -2, dp(12)));
+        root.addView(featureCard("03", "专辑补难度", "12 首 · 自动选难度 · 100% 判定",
+                "复用六轨打歌模块 · 需先记录两个固定坐标", "启动专辑脚本", BotService.MODE_ALBUM), Ui.lp(-1, -2, dp(12)));
+
+        // ── Footer ──────────────────────────────────────────────
+        root.addView(Ui.text(this, "三个功能不能同时运行。切换功能时会先停止当前任务并释放触点。音游多点触控需要按设备触摸驱动适配。",
+                12, Ui.MUTED, false), Ui.lp(-1, -2, dp(24)));
+        Button emailSettings = Ui.button(this, "邮箱提醒设置", false);
+        root.addView(emailSettings, Ui.lp(-1, dp(48), dp(20)));
         emailSettings.setOnClickListener(v -> startActivity(new Intent(this, EmailSettingsActivity.class)));
+
         setContentView(scroll);
         updatePermissionStatus();
     }
 
     private View featureCard(String number, String name, String desc, String detail, String action, String mode) {
-        LinearLayout card = card();
-        LinearLayout top = new LinearLayout(this);
-        top.setGravity(Gravity.CENTER_VERTICAL);
-        TextView num = text(number, 12, Color.rgb(47, 116, 105), true);
-        num.setGravity(Gravity.CENTER);
-        num.setBackground(round(Color.rgb(226, 242, 238), dp(12)));
-        top.addView(num, new LinearLayout.LayoutParams(dp(38), dp(38)));
-        LinearLayout titles = new LinearLayout(this); titles.setOrientation(LinearLayout.VERTICAL);
-        LinearLayout.LayoutParams titleParams = lp(0, -2); titleParams.weight = 1; titleParams.leftMargin = dp(12);
-        top.addView(titles, titleParams);
-        titles.addView(text(name, 18, INK, true));
-        TextView description = text(desc, 13, MUTED, false);
-        LinearLayout.LayoutParams dlp = lp(-2, -2); dlp.topMargin = dp(4); titles.addView(description, dlp);
-        card.addView(top);
-        TextView small = text(detail, 12, MUTED, false);
-        LinearLayout.LayoutParams slp = lp(-1, -2); slp.topMargin = dp(15); card.addView(small, slp);
-        Button launch = button(action, true);
-        LinearLayout.LayoutParams blp = lp(-1, dp(48)); blp.topMargin = dp(14); card.addView(launch, blp);
+        LinearLayout card = Ui.card(this);
+        card.addView(Ui.label(this, number, Ui.ACCENT));
+        card.addView(Ui.text(this, name, 19, Ui.INK, true), Ui.lp(-2, -2, dp(10)));
+        card.addView(Ui.text(this, desc, 13, Ui.SUBTLE, false), Ui.lp(-2, -2, dp(4)));
+        card.addView(Ui.divider(this), Ui.lp(-1, Ui.hairline(this), dp(16)));
+        card.addView(Ui.text(this, detail, 12, Ui.MUTED, false), Ui.lp(-1, -2, dp(14)));
+        Button launch = Ui.button(this, action, true);
+        LinearLayout.LayoutParams blp = Ui.lp(-2, dp(42), dp(16));
+        blp.gravity = Gravity.END;
+        card.addView(launch, blp);
         launch.setOnClickListener(v -> launchModule(mode));
         return card;
     }
@@ -157,11 +160,13 @@ public class MainActivity extends Activity {
     }
 
     private void updatePermissionStatus() {
-        if (permissionStatus == null) return;
+        if (overlayValue == null) return;
         boolean overlay = Settings.canDrawOverlays(this);
-        permissionStatus.setText("悬浮窗权限：" + (overlay ? "已授权" : "未授权")
-                + "\nRoot 权限：启动功能时由系统 Root 管理器确认");
-        permissionStatus.setTextColor(overlay ? Color.rgb(43, 128, 91) : Color.rgb(174, 105, 42));
+        int color = overlay ? Ui.OK : Ui.WARN;
+        overlayValue.setText(overlay ? "已授权" : "未授权");
+        overlayValue.setTextColor(color);
+        overlayDot.setBackground(Ui.oval(color));
+        permissionButton.setVisibility(overlay ? View.GONE : View.VISIBLE);
     }
 
     private void requestOverlayPermission() {
@@ -172,27 +177,5 @@ public class MainActivity extends Activity {
         } else updatePermissionStatus();
     }
 
-    private LinearLayout card() {
-        LinearLayout v = new LinearLayout(this); v.setOrientation(LinearLayout.VERTICAL);
-        v.setPadding(dp(17), dp(17), dp(17), dp(17));
-        v.setBackground(round(Color.WHITE, dp(18)));
-        if (Build.VERSION.SDK_INT >= 21) v.setElevation(dp(2));
-        return v;
-    }
-    private TextView text(String value, int size, int color, boolean bold) {
-        TextView v = new TextView(this); v.setText(value); v.setTextSize(size); v.setTextColor(color);
-        if (bold) v.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        return v;
-    }
-    private Button button(String label, boolean primary) {
-        Button b = new Button(this); b.setText(label); b.setAllCaps(false); b.setTextSize(14);
-        b.setTextColor(primary ? Color.WHITE : INK);
-        b.setBackground(round(primary ? Color.rgb(42, 113, 101) : Color.rgb(237, 241, 245), dp(13)));
-        return b;
-    }
-    private GradientDrawable round(int color, int radius) {
-        GradientDrawable d = new GradientDrawable(); d.setColor(color); d.setCornerRadius(radius); return d;
-    }
-    private LinearLayout.LayoutParams lp(int w, int h) { return new LinearLayout.LayoutParams(w, h); }
-    private int dp(float n) { return (int) (n * getResources().getDisplayMetrics().density + 0.5f); }
+    private int dp(float n) { return Ui.dp(this, n); }
 }
