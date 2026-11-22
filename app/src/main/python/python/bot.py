@@ -542,7 +542,7 @@ class GameBot:
 
     def detect_scene(self, f):
         # 保留原始 609 行脚本 detectScene() 的场景关键词与优先顺序。
-        t = f.full_text
+        t = f.compact_text
         if "离开" in t or "舱内人数" in t:
             return "跳伞"
         if "请勿在现实中模仿" in t:
