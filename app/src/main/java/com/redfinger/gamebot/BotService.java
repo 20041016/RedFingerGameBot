@@ -94,7 +94,7 @@ public class BotService extends Service {
     private LinearLayout overlayCard;       // the visible pill (ball + panel)
     private float uiScale = 1f;
     private static final float UI_SCALE_MIN = 0.6f, UI_SCALE_MAX = 1.8f;
-    private static final int COLOR_GO = 0xFF22A06B, COLOR_STOP = 0xFFC0443F;
+    private static final int COLOR_GO = 0xFF22A06B, COLOR_STOP = 0xFFD08A2E;   // amber: "pause" is not destructive, so not red
     private int pendingX, pendingY;
     private boolean dragFramePosted;
     private ValueAnimator snapAnimator;
@@ -374,9 +374,9 @@ public class BotService extends Service {
         expandedPanel = new LinearLayout(this);
         expandedPanel.setOrientation(LinearLayout.HORIZONTAL);
         expandedPanel.setGravity(Gravity.CENTER_VERTICAL);
-        expandedPanel.setPadding(dp(2), 0, 0, 0);
+        expandedPanel.setPadding(dp(6), 0, 0, 0);
 
-        toggleButton = new GlyphButton(this, GlyphButton.PLAY, COLOR_GO);
+        toggleButton = new GlyphButton(this, GlyphButton.PLAY, COLOR_GO, "开始", true);
         toggleButton.setContentDescription("启动" + modeLabel());
         toggleButton.setOnClickListener(v -> {
             if (active || engineTaskRunning) stopEngine();
@@ -390,20 +390,22 @@ public class BotService extends Service {
         statusText.setTextSize(11);
         statusText.setLines(2);
         statusText.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        statusText.setPadding(dp(6), 0, dp(6), 0);
-        expandedPanel.addView(statusText, new LinearLayout.LayoutParams(dp(150), -2));
+        statusText.setPadding(dp(10), 0, dp(8), 0);
+        expandedPanel.addView(statusText, new LinearLayout.LayoutParams(dp(124), -2));
 
-        GlyphButton settings = new GlyphButton(this, GlyphButton.TARGET, 0xFF3F6FB5);
-        settings.setContentDescription("打开坐标设置子菜单");
+        addPanelDivider();
+
+        GlyphButton settings = new GlyphButton(this, GlyphButton.TARGET, 0xFFD3DCE9, "坐标", false);
+        settings.setContentDescription("打开坐标设置");
         addPanelButton(settings);
         coordinateMenuButton = settings;
 
-        GlyphButton collapse = new GlyphButton(this, GlyphButton.CHEVRON, 0xFF566273);
+        GlyphButton collapse = new GlyphButton(this, GlyphButton.MINIMIZE, 0xFFD3DCE9, "收起", false);
         collapse.setContentDescription("收起控制栏");
         collapse.setOnClickListener(v -> setExpanded(false));
         addPanelButton(collapse);
 
-        GlyphButton close = new GlyphButton(this, GlyphButton.CLOSE, 0xFFB04A4A);
+        GlyphButton close = new GlyphButton(this, GlyphButton.CLOSE, 0xFFF0918C, "关闭", false);
         close.setContentDescription("关闭悬浮窗");
         close.setOnClickListener(v -> closePanel());
         addPanelButton(close);
@@ -464,15 +466,24 @@ public class BotService extends Service {
     }
 
     private void addPanelButton(GlyphButton button) {
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(34), dp(34));
-        lp.setMargins(dp(2), 0, dp(2), 0);
+        // Buttons size themselves (icon + label); only a small gap between them.
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2);
+        lp.setMargins(dp(1), 0, dp(1), 0);
         expandedPanel.addView(button, lp);
+    }
+
+    private void addPanelDivider() {
+        View d = new View(this);
+        d.setBackgroundColor(0x22FFFFFF);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(Math.max(1, dp(1)), dp(26));
+        lp.setMargins(dp(2), 0, dp(4), 0);
+        expandedPanel.addView(d, lp);
     }
 
     private GradientDrawable cardBackground() {
         GradientDrawable bg = new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
                 new int[]{0xF2273342, 0xF2161D28});
-        bg.setCornerRadius(dp(26));
+        bg.setCornerRadius(dp(30));
         bg.setStroke(Math.max(1, dp(1)), 0x33FFFFFF);
         return bg;
     }
@@ -480,8 +491,12 @@ public class BotService extends Service {
     /** Called after the overlay's size changed (expand/collapse/resize/first layout). */
     private void onOverlaySizeChanged(boolean first) {
         if (scaleRoot == null || overlayParams == null || !scaleRoot.isAttachedToWindow()) return;
-        if (expanded) clampOverlayIntoScreen();
-        else snapToEdge(!first);
+        if (expanded) {
+            // Labelled controls make the bar wider: shrink it to fit narrow (portrait) screens.
+            int nat = scaleRoot.naturalWidth();
+            if (nat > 0 && nat * uiScale > screenSize()[0] * 0.98f) { setUiScale(uiScale, false); return; }
+            clampOverlayIntoScreen();
+        } else snapToEdge(!first);
     }
 
     private void setExpanded(boolean value) {
@@ -1425,6 +1440,7 @@ public class BotService extends Service {
             boolean running = active || engineTaskRunning;
             if (toggleButton != null) {
                 toggleButton.setIcon(running ? GlyphButton.PAUSE : GlyphButton.PLAY);
+                toggleButton.setLabel(running ? "暂停" : "开始");
                 toggleButton.setColor(running ? COLOR_STOP : COLOR_GO);
                 String taskName = modeLabel();
                 toggleButton.setContentDescription(running ? "暂停" + taskName : "启动" + taskName);
