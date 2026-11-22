@@ -1,8 +1,12 @@
 <resources>
-    <style name="AppTheme" parent="Theme.MaterialComponents.DayNight.NoActionBar">
-        <item name="android:fontFamily">sans</item>
-        <item name="android:colorAccent">#26A69A</item>
-        <item name="android:navigationBarColor">#101820</item>
-        <item name="android:statusBarColor">#101820</item>
+    <!-- The screens are hand-styled in light colours, so pin the Light theme
+         (DayNight made system-themed widgets like EditText turn white-on-white in dark mode). -->
+    <style name="AppTheme" parent="Theme.MaterialComponents.Light.NoActionBar">
+        <item name="android:fontFamily">sans-serif</item>
+        <item name="android:colorAccent">#2F6F62</item>
+        <item name="android:colorControlActivated">#2F6F62</item>
+        <item name="android:windowBackground">#F6F6F3</item>
+        <item name="android:navigationBarColor">#F6F6F3</item>
+        <item name="android:statusBarColor">#F6F6F3</item>
     </style>
 </resources>
